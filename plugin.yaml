@@ -15,28 +15,6 @@ requires_hermes: ">=0.22.0"
 provides_tools:
   - linear_agent_status
   - linear_agent_authorize_url
-capabilities:
-  tools:
-    - linear_agent_status
-    - linear_agent_authorize_url
-  hooks: []
-  middleware: []
-  env:
-    - LINEAR_CLIENT_ID
-    - LINEAR_CLIENT_SECRET
-    - LINEAR_WEBHOOK_SECRET
-    - LINEAR_AGENT_PROFILE
-    - LINEAR_AGENT_ROUTING
-    - LINEAR_AGENT_PUBLIC_URL
-    - LINEAR_REDIRECT_URI
-    - LINEAR_API_KEY
-    - HERMES_GATEWAY_TOKEN
-  network: true
-  notes: >
-    Starts an HTTP listener only when the operator runs `hermes linear-agent serve`.
-    Posts to the Linear GraphQL API and to the local Hermes gateway; makes no other
-    outbound calls. Manages its own Linear OAuth tokens (no Hermes-managed oauth:
-    block), stored in a 0600 file whose path is LINEAR_TOKEN_PATH.
 provides_hooks: []
 requires_env:
   - name: LINEAR_CLIENT_ID
