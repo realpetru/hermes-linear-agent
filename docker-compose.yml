@@ -1,0 +1,21 @@
+services:
+  hermes-linear-agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BIND: 0.0.0.0
+      STATE_DB: /data/state.sqlite3
+    volumes:
+      - ./data:/data
+    ports:
+      # If your tunnel/reverse proxy runs on a different machine than this
+      # container, a 127.0.0.1 bind is unreachable from it. Publish on the LAN and
+      # let your firewall be the boundary. Loopback-only is safe only when the
+      # proxy shares this host's network namespace.
+      - "8650:8650"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8650/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

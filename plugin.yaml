@@ -1,0 +1,60 @@
+name: linear-agent
+label: Linear Agent
+kind: tool
+version: 1.0.0
+author: realpetru
+homepage: https://github.com/realpetru/hermes-linear-agent
+description: >
+  Turns Hermes into a first-class Linear agent. Assign an issue to the agent or
+  @mention it, and Hermes answers in the thread as its own app identity instead of
+  posting as a human. Ships both halves: a signature-verified webhook bridge that
+  speaks Linear's AgentSessionEvent API, and the tools to inspect that bridge and
+  generate the OAuth install URL. Works with any Hermes model and any public
+  hostname; everything host-specific is configuration, never code.
+requires_hermes: ">=0.22.0"
+provides_tools:
+  - linear_agent_status
+  - linear_agent_authorize_url
+provides_hooks: []
+requires_env:
+  - name: LINEAR_CLIENT_ID
+    description: "Linear OAuth app client ID (Linear -> Settings -> API -> Applications)"
+    prompt: "Linear OAuth client ID"
+    password: false
+  - name: LINEAR_CLIENT_SECRET
+    description: "Linear OAuth app client secret (shown once when the app is created)"
+    prompt: "Linear OAuth client secret"
+    password: true
+  - name: LINEAR_WEBHOOK_SECRET
+    description: "Signing secret Linear generates for the app's webhook URL"
+    prompt: "Linear webhook signing secret"
+    password: true
+optional_env:
+  - name: LINEAR_AGENT_BRIDGE_URL
+    description: "Where the bridge service listens (default http://127.0.0.1:8650)"
+    prompt: "Bridge URL"
+    password: false
+  - name: LINEAR_AGENT_PUBLIC_URL
+    description: "Public HTTPS base URL Linear posts webhooks to (required for a real install)"
+    prompt: "Public HTTPS URL of the bridge"
+    password: false
+  - name: HERMES_GATEWAY_TOKEN
+    description: "Hermes API server key the bridge uses to start runs (Bearer token)"
+    prompt: "Hermes API server key"
+    password: true
+config_schema:
+  bridge_url:
+    type: str
+    default: "http://127.0.0.1:8650"
+    description: "Base URL the status tool probes"
+    required: false
+  public_url:
+    type: str
+    default: ""
+    description: "Public HTTPS base URL used to build the OAuth redirect and webhook URLs"
+    required: false
+  timezone_offset_minutes:
+    type: int
+    default: 0
+    description: "Reserved for future reporting; stored for convenience only"
+    required: false
