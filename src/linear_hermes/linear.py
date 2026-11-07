@@ -36,6 +36,14 @@ mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
 }
 """
 
+LABELS_QUERY = """
+query IssueLabels($id: String!) {
+  issue(id: $id) {
+    labels(first: 50) { nodes { name } }
+  }
+}
+"""
+
 ISSUE_QUERY = """
 query IssueContext($id: String!) {
   issue(id: $id) {
@@ -127,6 +135,17 @@ class LinearClient:
     def issue_context(self, issue_id):
         return self._gql(ISSUE_QUERY, {"id": issue_id}).get("issue")
 
+    def issue_label_names(self, issue_id):
+        """The issue's label names, for routing.
+
+        An AgentSessionEvent carries the issue id but not its labels, so a bridge that
+        only reads the webhook payload routes every issue by the default. One query per
+        session (cached by the caller) closes that gap.
+        """
+        data = self._gql(LABELS_QUERY, {"id": issue_id}).get("issue") or {}
+        nodes = (data.get("labels") or {}).get("nodes") or []
+        return [str(node.get("name")) for node in nodes if isinstance(node, dict) and node.get("name")]
+
 
 class LinearCredentialMissing(LinearError):
     """Raised on first USE, not at boot, so the service can start unconfigured."""
@@ -148,4 +167,5 @@ class DeferredLinearClient:
 
     post_activity = _raise
     issue_context = _raise
+    issue_label_names = _raise
     set_external_url = _raise

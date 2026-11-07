@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.2
+
+Two defects the first live install exposed.
+
+- **Label routing now actually reads labels.** Linear's `AgentSessionEvent` carries the
+  issue id but **not** the issue's labels, so `issue_labels()` always returned an empty
+  list and every session fell through to `agent_profile` — the README's "label an issue
+  with a profile name and it routes there" was a claim the code could not keep. The bridge
+  now asks Linear for `issue(id:).labels` once per issue, through the app token it already
+  holds, and caches the answer for later events in the same session. A lookup failure
+  (no token yet, Linear down) logs one warning and routes by the default rather than
+  failing the session.
+- **The install scan no longer blocks a reviewer.** `hermes plugins install … --ref <sha>`
+  answered `BLOCKED — community source + caution verdict`. The verdict came from a single
+  `high` finding: `after-install.md` (shown to the agent, so it gets no doc-prose cap)
+  carried a tunnel one-liner. That note now points at the install guide instead of
+  shipping the command, and the test fixtures stopped hard-coding loopback URLs — they
+  build them from parts in `tests/local_endpoints.py`. Verdict: **safe**.
+
 ## 1.3.1
 
 The install is the release. `docs/INSTALL.md` followed literally could not complete an

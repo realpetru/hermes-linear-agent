@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from linear_hermes import plugin_api
+
+import local_endpoints
 from linear_hermes.oauth import save_tokens
 
 
@@ -27,11 +29,11 @@ class _DoctorBase(object):  # mixin: unittest must not collect it directly
         os.environ["LINEAR_CLIENT_SECRET"] = "csecret"
         os.environ["LINEAR_WEBHOOK_SECRET"] = "wsecret"
         os.environ["LINEAR_AGENT_PUBLIC_URL"] = "https://host.example"
-        os.environ["HERMES_GATEWAY_URL"] = "http://127.0.0.1:8642"
+        os.environ["HERMES_GATEWAY_URL"] = local_endpoints.gateway()
         os.environ["HERMES_GATEWAY_TOKEN"] = "gwtoken"
         self._bridge = plugin_api.bridge_status
         plugin_api.bridge_status = lambda url=None, timeout=3.0, **kw: {
-            "reachable": True, "url": "http://127.0.0.1:8650", "version": "1.3.1"
+            "reachable": True, "url": local_endpoints.bridge(), "version": "1.3.2"
         }
 
     def tearDown(self):
@@ -159,7 +161,7 @@ class _DoctorBase(object):  # mixin: unittest must not collect it directly
     def test_bridge_down(self):
         self.write_token()
         plugin_api.bridge_status = lambda url=None, timeout=3.0, **kw: {
-            "reachable": False, "error": "connection refused", "url": "http://127.0.0.1:8650"
+            "reachable": False, "error": "connection refused", "url": local_endpoints.bridge()
         }
         checks, ok = self.checks()
         self.assertFalse(ok)

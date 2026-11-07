@@ -10,6 +10,8 @@ import unittest
 from linear_hermes.adapters import build_adapter
 from linear_hermes.routing import choose_profile
 
+import local_endpoints
+
 
 def payload_with_labels(*names):
     return {
@@ -101,7 +103,7 @@ class AdapterWiringTests(unittest.TestCase):
     def setUp(self):
         self.cfg = types.SimpleNamespace(
             hermes_adapter="gateway",
-            gateway_url="http://127.0.0.1:8642",
+            gateway_url=local_endpoints.gateway(),
             gateway_token="test-token",
             agent_profile="appy",
             routing={"bug": "typo-profile", "feature": "studio"},

@@ -2,15 +2,10 @@
 
 Order matters — the plugin needs values that only exist after two other steps.
 
-1. **Give it a public URL.** Linear will not POST to localhost. On a laptop:
-
-   ```bash
-   cloudflared tunnel --url http://127.0.0.1:8650
-   # => https://calm-fox-1234.trycloudflare.com
-   ```
-
-   Keep that terminal open. A quick tunnel changes hostname on restart — fine for a
-   test, not for daily use.
+1. **Give it a public URL.** Linear will not POST to localhost, so expose the bridge on
+   public HTTPS first — a tunnel is the quickest way on a laptop. docs/INSTALL.md §0 has
+   the exact command, the URL shape it prints, and the warning that a quick tunnel gets a
+   new hostname on every restart.
 
 2. **Create the Linear app** at <https://linear.app/settings/api/applications/new>
    (workspace admin). Callback URL `https://HOST/oauth/callback`; enable Webhooks with

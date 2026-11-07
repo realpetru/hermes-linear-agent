@@ -69,10 +69,16 @@ def main():
 
     live = LiveConfig(load_config, ttl=cfg.refresh_seconds)
 
+    # One label lookup per issue, not per event: replies in the same session reuse it.
+    label_cache = {}
+
     def profile_for(payload):
+        from .routing import resolve_labels
+
         current = live.get()
+        labels = resolve_labels(payload, fetch=linear.issue_label_names, cache=label_cache)
         return choose_profile(
-            payload, current.agent_profile, current.routing, available_profiles()
+            payload, current.agent_profile, current.routing, available_profiles(), labels=labels
         )
 
     def adapter_for(payload):

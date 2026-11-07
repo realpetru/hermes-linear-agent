@@ -11,6 +11,8 @@ import stat
 import tempfile
 import unittest
 
+import local_endpoints
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "dashboard" / "plugin_api.py"
 
@@ -44,7 +46,7 @@ class DashboardTestCase(unittest.TestCase):
         # never touch the network in unit tests
         self.api.bridge_status = lambda url=None, timeout=3.0: {
             "reachable": True, "version": "1.3.0", "sessions_handled": 3,
-            "last_error": "", "url": "http://127.0.0.1:8650",
+            "last_error": "", "url": local_endpoints.bridge(),
         }
 
     def tearDown(self):

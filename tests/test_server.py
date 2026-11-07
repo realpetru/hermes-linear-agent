@@ -8,6 +8,8 @@ from linear_hermes.config import Config
 from linear_hermes.server import serve
 from linear_hermes.signature import compute_signature
 
+import local_endpoints
+
 SECRET = "topsecret"
 BODY = json.dumps({"type": "AgentSessionEvent", "action": "created",
                    "agentSession": {"id": "sess-1"}}).encode()
@@ -37,7 +39,7 @@ class ServerTests(unittest.TestCase):
         self.httpd.server_close()
 
     def post(self, body, sig):
-        req = urllib.request.Request("http://127.0.0.1:%d/webhook" % self.port, data=body, method="POST")
+        req = urllib.request.Request(local_endpoints.url(self.port, "/webhook"), data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         if sig is not None:
             req.add_header("Linear-Signature", sig)
@@ -66,21 +68,21 @@ class ServerTests(unittest.TestCase):
 
     def test_oauth_callback_without_code_is_400(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen("http://127.0.0.1:%d/oauth/callback" % self.port, timeout=5)
+            urllib.request.urlopen(local_endpoints.url(self.port, "/oauth/callback"), timeout=5)
         self.assertEqual(ctx.exception.code, 400)
 
     def test_oauth_callback_without_state_is_rejected(self):
         """A state-changing GET with no CSRF state must not exchange anything."""
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(
-                "http://127.0.0.1:%d/oauth/callback?code=abc" % self.port, timeout=5
+                local_endpoints.url(self.port, "/oauth/callback?code=abc"), timeout=5
             )
         self.assertEqual(ctx.exception.code, 400)
 
     def test_oauth_callback_with_forged_state_is_rejected(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(
-                "http://127.0.0.1:%d/oauth/callback?code=abc&state=1.deadbeef" % self.port, timeout=5
+                local_endpoints.url(self.port, "/oauth/callback?code=abc&state=1.deadbeef"), timeout=5
             )
         self.assertEqual(ctx.exception.code, 400)
 
@@ -91,7 +93,7 @@ class ServerTests(unittest.TestCase):
         state = make_state(SECRET)
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(
-                "http://127.0.0.1:%d/oauth/callback?code=abc&state=%s" % (self.port, state),
+                local_endpoints.url(self.port, "/oauth/callback?code=abc&state=" + state),
                 timeout=5,
             )
         self.assertEqual(ctx.exception.code, 500)
@@ -99,7 +101,7 @@ class ServerTests(unittest.TestCase):
     def test_oauth_callback_reports_declined_install(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(
-                "http://127.0.0.1:%d/oauth/callback?error=access_denied" % self.port, timeout=5
+                local_endpoints.url(self.port, "/oauth/callback?error=access_denied"), timeout=5
             )
         self.assertEqual(ctx.exception.code, 400)
 
@@ -110,7 +112,7 @@ class ServerTests(unittest.TestCase):
         state = make_state(SECRET)
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(
-                "http://127.0.0.1:%d/oauth/callback?code=abc&state=%s" % (self.port, state),
+                local_endpoints.url(self.port, "/oauth/callback?code=abc&state=" + state),
                 timeout=5,
             )
         self.assertEqual(ctx.exception.code, 500)  # no client id configured here
@@ -119,7 +121,7 @@ class ServerTests(unittest.TestCase):
         """/status is public; it must not leak session counts or which keys are set."""
         import json as _json
 
-        with urllib.request.urlopen("http://127.0.0.1:%d/status" % self.port, timeout=5) as r:
+        with urllib.request.urlopen(local_endpoints.url(self.port, "/status"), timeout=5) as r:
             body = _json.loads(r.read().decode())
         self.assertEqual(body.get("status"), "ok")
         for leak in ("sessions_handled", "last_error", "agent_profile", "configured"):
@@ -131,7 +133,7 @@ class ServerTests(unittest.TestCase):
 
         os.environ["STATUS_TOKEN"] = "s3cret"
         try:
-            req = urllib.request.Request("http://127.0.0.1:%d/status" % self.port)
+            req = urllib.request.Request(local_endpoints.url(self.port, "/status"))
             req.add_header("Authorization", "Bearer s3cret")
             with urllib.request.urlopen(req, timeout=5) as r:
                 body = _json.loads(r.read().decode())
@@ -146,7 +148,7 @@ class ServerTests(unittest.TestCase):
 
         os.environ["STATUS_TOKEN"] = "s3cret"
         try:
-            req = urllib.request.Request("http://127.0.0.1:%d/status" % self.port)
+            req = urllib.request.Request(local_endpoints.url(self.port, "/status"))
             req.add_header("Authorization", "Bearer wrong")
             with urllib.request.urlopen(req, timeout=5) as r:
                 body = _json.loads(r.read().decode())
@@ -155,7 +157,7 @@ class ServerTests(unittest.TestCase):
             os.environ.pop("STATUS_TOKEN", None)
 
     def test_health(self):
-        with urllib.request.urlopen("http://127.0.0.1:%d/healthz" % self.port, timeout=5) as r:
+        with urllib.request.urlopen(local_endpoints.url(self.port, "/healthz"), timeout=5) as r:
             self.assertEqual(r.status, 200)
 
 
@@ -187,7 +189,7 @@ class ReplayWindowTests(unittest.TestCase):
         self.httpd.server_close()
 
     def test_stale_delivery_rejected_when_window_enabled(self):
-        req = urllib.request.Request("http://127.0.0.1:%d/webhook" % self.port,
+        req = urllib.request.Request(local_endpoints.url(self.port, "/webhook"),
                                      data=self.body, method="POST")
         req.add_header("Linear-Signature", self.sig)
         with self.assertRaises(urllib.error.HTTPError) as ctx:
