@@ -142,7 +142,8 @@ class _DoctorBase(object):  # mixin: unittest must not collect it directly
         checks, ok = self.checks(probe)
         self.assertFalse(ok)
         self.assertFalse(checks["public"][0])
-        self.assertIn("cannot reach", checks["public"][1])
+        self.assertTrue("answered nothing" in checks["public"][1]
+                        or "cannot reach" in checks["public"][1])
 
     def test_gateway_401_means_token_mismatch(self):
         self.write_token()

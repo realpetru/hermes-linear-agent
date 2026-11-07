@@ -72,6 +72,9 @@ def bridge_status(url=None, timeout=3.0):
     url = url or os.environ.get("LINEAR_AGENT_BRIDGE_URL") or DEFAULT_BRIDGE
     try:
         request = urllib.request.Request(url.rstrip("/") + "/status")
+        # Same reason as the doctor probes: a CDN in front of a remote bridge
+        # answers 403 to the default Python-urllib agent.
+        request.add_header("User-Agent", user_agent())
         token = (os.environ.get("STATUS_TOKEN") or "").strip()
         if token:
             request.add_header("Authorization", "Bearer " + token)
@@ -292,12 +295,25 @@ def _settings_path_public():
         return ""
 
 
+def user_agent():
+    """A real User-Agent for our own probes.
+
+    The default ``Python-urllib/x`` is refused with 403 by Cloudflare's bot rules, and
+    a tunnel in front of the bridge is the normal deployment — without this, doctor
+    reports "cannot reach this" on a perfectly healthy install.
+    """
+    return "linear-agent-doctor/%s" % _version()
+
+
 def _probe(url, timeout=5, headers=None, data=None, method=None):
     """Small injectable HTTP helper: tests replace it, doctor uses it."""
     import urllib.error
     import urllib.request
 
     request = urllib.request.Request(url, data=data, method=method)
+    given = {k.lower() for k in (headers or {})}
+    if "user-agent" not in given:
+        request.add_header("User-Agent", user_agent())
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     try:
@@ -380,11 +396,26 @@ def doctor(timeout=5, probe=None):
         status, _body = probe(urls["public_url"] + "/healthz", timeout)
         if status == 200:
             checks.append(("public", True, urls["public_url"] + "/healthz"))
+        elif status in (403, 429):
+            checks.append((
+                "public",
+                False,
+                "%s/healthz answered %s — blocked in front of the bridge (proxy/CDN bot rule, "
+                "e.g. Cloudflare), not by the bridge. The bridge is probably fine: allow "
+                "linear-agent-doctor or this path at the edge." % (urls["public_url"], status),
+            ))
+        elif status == 0:
+            checks.append((
+                "public",
+                False,
+                "%s/healthz answered nothing — DNS, tunnel or firewall, not the bridge"
+                % urls["public_url"],
+            ))
         else:
             checks.append((
                 "public",
                 False,
-                "%s/healthz answered %s — Linear cannot reach this" % (urls["public_url"], status or "nothing"),
+                "%s/healthz answered %s — Linear cannot reach this" % (urls["public_url"], status),
             ))
 
     if urls["webhook_url"] and secrets["LINEAR_WEBHOOK_SECRET"]:
@@ -401,8 +432,17 @@ def doctor(timeout=5, probe=None):
             checks.append(("signature", True, "signed test delivery accepted (200)"))
         elif status == 401:
             checks.append(("signature", False, "401 — LINEAR_WEBHOOK_SECRET does not match this webhook"))
+        elif status in (403, 429):
+            checks.append((
+                "signature",
+                False,
+                "%s — blocked in front of the bridge (proxy/CDN bot rule), not a signature "
+                "problem. Allow linear-agent-doctor or the /webhook path at the edge." % status,
+            ))
+        elif status == 0:
+            checks.append(("signature", False, "signed delivery answered nothing — the public host did not respond"))
         else:
-            checks.append(("signature", False, "signed delivery answered %s" % (status or "nothing")))
+            checks.append(("signature", False, "signed delivery answered %s" % status))
     else:
         checks.append(("signature", False, "no public URL or no webhook secret"))
 

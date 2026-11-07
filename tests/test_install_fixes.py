@@ -20,9 +20,16 @@ class HomeTestCase(unittest.TestCase):
         self.home = tempfile.mkdtemp()
         self._home = os.environ.get("HERMES_HOME")
         self._cwd = os.getcwd()
+        # This suite asserts the *default* paths, so an ambient override from the
+        # shell (or a previous suite) must not decide the answer.
+        self._ambient = {k: os.environ.pop(k, None) for k in
+                         ("LINEAR_AGENT_SETTINGS_DIR", "LINEAR_TOKEN_PATH", "STATE_DB")}
         os.environ["HERMES_HOME"] = self.home
 
     def tearDown(self):
+        for key, value in getattr(self, "_ambient", {}).items():
+            if value is not None:
+                os.environ[key] = value
         if self._home is None:
             os.environ.pop("HERMES_HOME", None)
         else:
