@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.1
+
+Fixes for real, long-lived installs — each of these only shows up outside a throwaway
+home directory.
+
+- **`hermes plugins enable` works on PM-managed installs.** The plugin shipped a
+  `pyproject.toml` with a `[project]` table, so Hermes' plugin admission attempted an
+  editable install into its managed venv; on installs whose venv predates the plugin
+  workspace that failed inside `uv` before the plugin ever loaded. The plugin is
+  stdlib-only and Hermes imports `__init__.py` directly, so **the packaging metadata is
+  gone** — installs now need no dependency step at all.
+- **Upgrading no longer fails with "port is already allocated".** The Compose service is
+  back to its original name `linear-hermes-agent`, because the Compose *project* derives
+  from it and renaming orphaned the running container. **Upgrading from 1.2.0:**
+  ```bash
+  docker compose down          # removes the old, renamed container (your ./data volume stays)
+  docker compose up -d --build
+  ```
+- **`/status` no longer leaks state.** It returns only `{"status": "ok"}` to anonymous
+  callers. Set `STATUS_TOKEN` and send `Authorization: Bearer <token>` to get the full
+  document (session counts, last error, active profile). `/healthz` is unchanged and
+  always minimal.
+
 ## 1.2.0
 
 Switching agents no longer requires editing configuration.

@@ -1,6 +1,7 @@
 """Minimal always-on HTTP receiver. stdlib only, no framework."""
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -13,8 +14,23 @@ from .signature import HEADER, verify_signature
 
 log = logging.getLogger(__name__)
 
-SERVICE_VERSION = "1.2.0"
+SERVICE_VERSION = "1.2.1"
 MAX_BODY = 1 << 20  # 1 MiB: Linear payloads are far smaller
+
+
+def status_token():
+    return (os.environ.get("STATUS_TOKEN") or "").strip()
+
+
+def status_authorized(headers):
+    """True only when STATUS_TOKEN is configured and the request presents it."""
+    token = status_token()
+    if not token:
+        return False
+    presented = (headers.get("Authorization") or "").strip()
+    if not presented.lower().startswith("bearer "):
+        return False
+    return hmac.compare_digest(presented[7:].strip(), token)
 
 
 def status_info():
@@ -36,7 +52,7 @@ def make_handler(cfg, on_event):
     """on_event(payload, headers) runs in a worker thread after a 200 is sent."""
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "hermes-linear-agent/1.2.0"
+        server_version = "hermes-linear-agent/1.2.1"
 
         def _send(self, code, body):
             raw = json.dumps(body).encode("utf-8")
@@ -100,7 +116,11 @@ def make_handler(cfg, on_event):
             if path in ("/healthz", "/health"):
                 return self._send(200, {"status": "ok"})
             if path == "/status":
-                return self._send(200, status_info())
+                # Public by default, because a bridge is often health-checked from
+                # outside. Full detail only to a caller holding STATUS_TOKEN.
+                if status_authorized(self.headers):
+                    return self._send(200, status_info())
+                return self._send(200, {"status": "ok", "service": "linear-agent"})
             if path == "/oauth/callback":
                 return self._oauth_callback()
             return self._send(404, {"error": "not found"})

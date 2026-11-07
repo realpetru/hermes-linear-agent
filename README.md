@@ -124,7 +124,12 @@ means. Several profiles are several brains behind one Linear identity.
 
 ## Security model
 
-- **Two** public routes, both guarded:
+- **Public, but deliberately thin:** `GET /healthz` returns `{"status": "ok"}`, and
+  `GET /status` returns the same unless the caller presents
+  `Authorization: Bearer $STATUS_TOKEN`. Session counts, the last error and the active
+  profile are only visible to a caller holding that token, so a public bridge is not
+  free reconnaissance.
+- **Two** public routes that change or expose anything, both guarded:
   - `POST /webhook` is useless without a valid `Linear-Signature`: hex HMAC-SHA256 over
     the **raw** body, constant-time compared. A bad or missing signature is rejected
     with `401` before JSON parsing and before any thread is spawned. There is no
@@ -164,6 +169,7 @@ means. Several profiles are several brains behind one Linear identity.
 | `HERMES_ADAPTER` | no | `gateway` (default) or `subprocess` |
 | `HEARTBEAT_SECONDS` | no | default 45; interim "still working" thought, `0` disables |
 | `MAX_CONCURRENCY` | no | default 3 |
+| `STATUS_TOKEN` | no | when set, `/status` returns the full document to `Authorization: Bearer <token>`; otherwise it stays `{"status":"ok"}` |
 | `BIND` / `PORT` | no | default `127.0.0.1:8650` |
 
 ## Deployment note

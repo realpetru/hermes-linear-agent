@@ -132,6 +132,20 @@ Then, in Linear:
 If step 2 never happens, the session is marked unresponsive — check the service log
 for a signature rejection.
 
+## 5b. Upgrading an existing deployment
+
+The Compose service name is intentionally stable (`linear-hermes-agent`); do not rename
+it, because the Compose project derives from it and a rename orphans the running
+container.
+
+If you upgraded from 1.2.0 (which did rename it) and `docker compose up -d` failed with
+`Bind for 0.0.0.0:8650 failed: port is already allocated`:
+
+```bash
+docker compose down        # removes the old container; ./data (your tokens) is untouched
+docker compose up -d --build
+```
+
 ## 6. Rotating secrets
 
 - **Client secret:** Linear → application page → rotate; update

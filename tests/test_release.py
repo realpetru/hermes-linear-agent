@@ -4,7 +4,7 @@ import re
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-EXPECTED = "1.2.0"
+EXPECTED = "1.2.1"
 VALID_KINDS = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 REQUIRED_CATALOG_KEYS = ("name", "repo", "sha", "description", "maintainer")
 
@@ -17,9 +17,6 @@ class VersionTests(unittest.TestCase):
     def test_plugin_yaml_version(self):
         self.assertIn("version: %s" % EXPECTED, read("plugin.yaml"))
 
-    def test_pyproject_version(self):
-        self.assertRegex(read("pyproject.toml"), r'version\s*=\s*"%s"' % re.escape(EXPECTED))
-
     def test_entrypoint_version(self):
         self.assertIn('PLUGIN_VERSION = "%s"' % EXPECTED, read("__init__.py"))
 
@@ -30,8 +27,50 @@ class VersionTests(unittest.TestCase):
         self.assertIn('version: "%s"' % EXPECTED, read("plugin-catalog/linear-agent.yaml"))
 
     def test_no_stale_old_versions(self):
-        for rel in ("__init__.py", "src/linear_hermes/server.py", "pyproject.toml"):
+        for rel in ("__init__.py", "src/linear_hermes/server.py"):
             self.assertNotIn("0.1.0", read(rel), rel)
+
+
+class PackagingTests(unittest.TestCase):
+    """A [project] table makes Hermes' plugin admission attempt an editable install.
+
+    On a PM-managed install whose managed venv predates the workspace path, `hermes
+    plugins enable` then dies inside uv before the plugin ever loads. The plugin is
+    stdlib-only and Hermes imports __init__.py directly, so it must ship no
+    distribution metadata at all.
+    """
+
+    def test_no_pyproject_distribution(self):
+        p = ROOT / "pyproject.toml"
+        if not p.exists():
+            return  # ideal
+        text = p.read_text(encoding="utf-8")
+        self.assertNotIn("[project]", text, "a [project] table triggers an editable install")
+        self.assertNotIn("[build-system]", text, "a build backend creates a distribution")
+
+    def test_package_imports_without_being_installed(self):
+        import importlib
+        import sys
+
+        src = str(ROOT / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        mod = importlib.import_module("linear_hermes.plugin_api")
+        self.assertTrue(hasattr(mod, "register_plugin_surface"))
+
+
+class ComposeTests(unittest.TestCase):
+    """The Compose project derives from the service name; renaming it orphans the
+    running container and an upgrade dies with "port is already allocated"."""
+
+    def test_service_name_is_the_stable_one(self):
+        text = read("docker-compose.yml")
+        self.assertIn("linear-hermes-agent:", text)
+        self.assertNotIn("hermes-linear-agent:", text)
+
+    def test_stability_is_documented_next_to_it(self):
+        text = read("docker-compose.yml")
+        self.assertIn("port is already allocated", text)
 
 
 class ManifestTests(unittest.TestCase):

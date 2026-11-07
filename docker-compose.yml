@@ -1,5 +1,8 @@
 services:
-  hermes-linear-agent:
+  # Service name is deliberately NOT renamed to match the repository: the Compose
+  # project derives from it, so renaming it orphans the running container and an
+  # upgrade dies with "port is already allocated". Keep this name stable.
+  linear-hermes-agent:
     build: .
     restart: unless-stopped
     env_file: .env

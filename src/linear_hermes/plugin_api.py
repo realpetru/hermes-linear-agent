@@ -70,7 +70,11 @@ def _bridge_url(ctx=None):
 def bridge_status(url, timeout=3.0):
     """Probe the bridge. Returns a dict that is always JSON-serialisable."""
     try:
-        with urllib.request.urlopen(url.rstrip("/") + "/status", timeout=timeout) as r:
+        request = urllib.request.Request(url.rstrip("/") + "/status")
+        token = (os.environ.get("STATUS_TOKEN") or "").strip()
+        if token:
+            request.add_header("Authorization", "Bearer " + token)
+        with urllib.request.urlopen(request, timeout=timeout) as r:
             payload = json.loads(r.read().decode("utf-8"))
         payload["reachable"] = True
         return payload

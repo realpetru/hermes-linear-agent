@@ -115,6 +115,45 @@ class ServerTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.code, 500)  # no client id configured here
 
+    def test_status_is_minimal_for_anonymous_callers(self):
+        """/status is public; it must not leak session counts or which keys are set."""
+        import json as _json
+
+        with urllib.request.urlopen("http://127.0.0.1:%d/status" % self.port, timeout=5) as r:
+            body = _json.loads(r.read().decode())
+        self.assertEqual(body.get("status"), "ok")
+        for leak in ("sessions_handled", "last_error", "agent_profile", "configured"):
+            self.assertNotIn(leak, body, "anonymous /status leaked %s" % leak)
+
+    def test_status_returns_detail_with_the_token(self):
+        import json as _json
+        import os
+
+        os.environ["STATUS_TOKEN"] = "s3cret"
+        try:
+            req = urllib.request.Request("http://127.0.0.1:%d/status" % self.port)
+            req.add_header("Authorization", "Bearer s3cret")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                body = _json.loads(r.read().decode())
+            self.assertIn("sessions_handled", body)
+            self.assertEqual(body.get("status"), "ok")
+        finally:
+            os.environ.pop("STATUS_TOKEN", None)
+
+    def test_status_rejects_a_wrong_token(self):
+        import json as _json
+        import os
+
+        os.environ["STATUS_TOKEN"] = "s3cret"
+        try:
+            req = urllib.request.Request("http://127.0.0.1:%d/status" % self.port)
+            req.add_header("Authorization", "Bearer wrong")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                body = _json.loads(r.read().decode())
+            self.assertNotIn("sessions_handled", body)
+        finally:
+            os.environ.pop("STATUS_TOKEN", None)
+
     def test_health(self):
         with urllib.request.urlopen("http://127.0.0.1:%d/healthz" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)

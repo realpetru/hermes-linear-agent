@@ -1,10 +1,12 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY pyproject.toml ./
 COPY src ./src
 COPY scripts ./scripts
-RUN pip install --no-cache-dir .
+# No pip install: the plugin is stdlib-only and Hermes loads __init__.py directly.
+# Shipping a [project] table made Hermes' plugin admission attempt an editable
+# install into its managed venv, which fails on pre-existing installs.
+ENV PYTHONPATH=/app/src
 
 ENV PYTHONUNBUFFERED=1 \
     PORT=8650 \
