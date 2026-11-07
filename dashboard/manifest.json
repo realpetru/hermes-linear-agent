@@ -1,0 +1,11 @@
+{
+  "name": "linear-agent",
+  "label": "Linear agent",
+  "description": "Choose which Hermes agent answers Linear issues",
+  "icon": "Bot",
+  "version": "1.3.0",
+  "tab": { "path": "/linear-agent", "position": "after:skills" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
