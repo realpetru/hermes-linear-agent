@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.0
+
+- **A real screen for choosing the agent.** `linear-agent` now ships a Hermes dashboard
+  tab (`dashboard/`): assign issues to *cody* here, a label there, nothing in between.
+  The tab lists every profile on the host as a card, marks the active one, and saves with
+  one click — writing the exact same `plugin-data/linear-agent/settings.json` the CLI
+  writes, so the two can never disagree. Bridge health is shown next to the title
+  (`bridge reachable · v1.3.0`, or the actual error when it is down).
+- **No build step, on purpose.** The tab is a plain IIFE that takes React from the
+  dashboard SDK (`window.__HERMES_PLUGIN_SDK__`), with no bundler, no npm and no React
+  vendored into the repo. It works on a machine that has no Node installed — which is
+  where this plugin was developed.
+- **Gray failure, not a blank tab.** If the API cannot be reached the tab renders an
+  error card with a Retry button and the server's own message; unknown profiles are
+  rejected by the backend with the same near-miss suggestion the CLI prints.
+
 ## 1.2.1
 
 Fixes for real, long-lived installs — each of these only shows up outside a throwaway

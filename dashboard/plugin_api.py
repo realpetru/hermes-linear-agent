@@ -92,7 +92,14 @@ def apply_profile(profile) -> dict:
         name = validate_profile(profile)
     except ProfileError as exc:
         raise ValueError(str(exc)) from exc
-    set_stored_profile(name)
+    try:
+        set_stored_profile(name)
+    except OSError as exc:
+        # An unwritable settings directory is the operator's problem, and the page
+        # should say so in words rather than render a stack trace.
+        raise ValueError(
+            "could not write %s: %s" % (settings_path(), exc.strerror or exc)
+        ) from exc
     return build_state()
 
 

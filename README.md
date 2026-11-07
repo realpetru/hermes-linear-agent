@@ -68,6 +68,17 @@ a user never has to wire up a second deployment.
 server starts, logs one warning, and fails only when Linear is actually called, with a
 message telling the operator to run `authorize`.
 
+## Dashboard tab
+
+The plugin adds a **Linear agent** tab to the Hermes dashboard (after *Skills*): one card
+per profile on the host, the active one marked, and a Save button that writes the same
+`plugin-data/linear-agent/settings.json` that `hermes linear-agent agent set` writes.
+Bridge reachability and its version sit in the header, and a failure renders an error
+card with Retry rather than an empty page.
+
+It is deliberately buildless — plain IIFE, React from the dashboard SDK, no npm — so it
+loads on hosts that have no Node toolchain, including the one it was written on.
+
 ## Which agent answers
 
 Run more than one Hermes agent? Two ways to choose who handles Linear, and neither

@@ -55,7 +55,10 @@
 }
 
 .la-pill-ok .la-dot {
-  background: var(--accent, #16a34a);
+  /* status colours are semantic, not the theme accent: a host may provide
+     --success/--warning, otherwise fall back to a green/amber that reads on both
+     light and dark backgrounds. */
+  background: var(--success, #16a34a);
 }
 
 .la-pill-warn {
@@ -63,7 +66,7 @@
 }
 
 .la-pill-warn .la-dot {
-  background: #d97706; /* amber: readable on both light and dark */
+  background: var(--warning, #d97706);
 }
 
 /* ---------- lede ---------- */
@@ -233,7 +236,7 @@
 }
 
 .la-note-warn {
-  color: #b45309;
+  color: var(--warning, #b45309);
 }
 
 .la-muted {
@@ -253,12 +256,12 @@
 }
 
 .la-toast-bad {
-  border-color: #b45309;
-  color: #b45309;
+  border-color: var(--warning, #b45309);
+  color: var(--warning-foreground, #b45309);
 }
 
 .la-card-error {
-  border-color: #b45309;
+  border-color: var(--warning, #b45309);
 }
 
 .la-error-title {

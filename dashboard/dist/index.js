@@ -53,6 +53,17 @@
     return (parts[0][0] + parts[1][0]).toUpperCase();
   }
 
+  function messageOf(body, status) {
+    var detail = body && (body.detail || body.message || body.error);
+    if (!detail) return "HTTP " + status;
+    if (typeof detail === "string") return detail;
+    try {
+      return JSON.stringify(detail);
+    } catch (e) {
+      return "HTTP " + status;
+    }
+  }
+
   function activeLabel(active) {
     return active || "the gateway default agent";
   }
@@ -148,8 +159,16 @@
       });
       fetch(API + "/state", { headers: { Accept: "application/json" } })
         .then(function (r) {
-          if (!r.ok) throw new Error("HTTP " + r.status);
-          return r.json();
+          return r.json().then(
+            function (body) {
+              if (!r.ok) throw new Error(messageOf(body, r.status));
+              return body;
+            },
+            function () {
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              return {};
+            }
+          );
         })
         .then(function (data) {
           set({ loading: false, error: "", data: data });
@@ -189,10 +208,7 @@
       })
         .then(function (r) {
           return r.json().then(function (body) {
-            if (!r.ok) {
-              var detail = (body && (body.detail || body.message)) || "HTTP " + r.status;
-              throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-            }
+            if (!r.ok) throw new Error(messageOf(body, r.status));
             return body;
           });
         })
@@ -321,7 +337,7 @@
                   onClick: save,
                 },
                 isSaving ? h("span", { className: "la-spinner", "aria-hidden": "true" }) : null,
-                isSaving ? "Saving…" : dirty ? "Save agent" : "Saved"
+                isSaving ? "Saving…" : "Save agent"
               ),
               dirty
                 ? h(
