@@ -1,7 +1,7 @@
 # Catalog entry for NousResearch/hermes-agent -> plugin-catalog/linear-agent.yaml
 name: linear-agent
 repo: https://github.com/realpetru/hermes-linear-agent
-sha: "790487d7f51d044f2f01b676bcd03539f1e4a42f"
+sha: "cd8bd5f182bdb7e3c2209a8890a6f8af7b44f50f"
 description: >
   Makes Hermes a first-class Linear agent: assign an issue or @mention it and Hermes
   replies in-thread under its own app identity. Ships a signature-verified webhook
