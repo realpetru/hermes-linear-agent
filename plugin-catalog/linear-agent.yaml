@@ -2,7 +2,7 @@
 # Replace SHA with the full 40-character commit you are pinning at release.
 name: linear-agent
 repo: https://github.com/realpetru/hermes-linear-agent
-sha: "af8982fd01aa115b6f5830c3bb789b9f98dba2e9"
+sha: "78612b3e2cda65758f6e89760ce8ffa47914d56d"
 version: "1.0.0"
 description: >
   Makes Hermes a first-class Linear agent: assign an issue or @mention it and Hermes
