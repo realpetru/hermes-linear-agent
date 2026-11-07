@@ -1,4 +1,4 @@
-"""Static guarantees for the dashboard half: no build, no external assets, consistent."""
+"""Static guarantees for the dashboard half: exact SDK surface, no build, theme-native."""
 
 import json
 import pathlib
@@ -32,47 +32,82 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue((DASH / self.manifest["api"]).is_file())
 
 
-class FrontendTests(unittest.TestCase):
+class SdkContractTests(unittest.TestCase):
+    """The page must use the SDK surface from web/src/plugins/registry.ts exactly."""
+
+    def setUp(self):
+        self.js = (DASH / "dist" / "index.js").read_text(encoding="utf-8")
+
+    def test_no_bare_fetch(self):
+        # bare fetch drops the loopback token / gated cookie and renders a 401 blank tab
+        self.assertIsNone(re.search(r"\bfetch\s*\(", self.js), "bare fetch( found; use SDK.fetchJSON")
+        self.assertNotIn("window.fetch", self.js)
+
+    def test_uses_fetchjson(self):
+        self.assertIn("SDK.fetchJSON", self.js)
+
+    def test_uses_the_sdk_toast_pair(self):
+        self.assertIn("hooks.useToast", self.js)
+        self.assertIn("showToast(", self.js)
+        self.assertIn("toast: toastState.toast", self.js)
+
+    def test_uses_sdk_cn(self):
+        self.assertIn("utils.cn", self.js)
+
+    def test_checks_the_sdk_contract_version(self):
+        self.assertIn("sdkVersion", self.js)
+
+    def test_registers_through_the_registry(self):
+        self.assertIn('registry.register("linear-agent"', self.js)
+        self.assertNotIn("__HERMES_PLUGINS__ =", self.js)  # never redefine the host global
+
+    def test_hooks_come_from_the_sdk(self):
+        for hook in ("useState", "useEffect", "useCallback", "useMemo"):
+            self.assertIn("hooks.%s" % hook, self.js)
+
+    def test_react_is_never_bundled(self):
+        self.assertNotIn("cdn.", self.js)
+        self.assertIsNone(re.search(r"import\s+React", self.js))
+
+    def test_no_bundler_syntax(self):
+        self.assertTrue(self.js.lstrip().startswith("/**"))
+        for banned in ("import ", "require(", "export "):
+            self.assertNotIn(banned, self.js, "module syntax would need a build step")
+
+
+class AssetsTests(unittest.TestCase):
     def setUp(self):
         self.js = (DASH / "dist" / "index.js").read_text(encoding="utf-8")
         self.css = (DASH / "dist" / "style.css").read_text(encoding="utf-8")
 
-    def test_registers_under_its_plugin_name(self):
-        self.assertIn('__HERMES_PLUGINS__.register("linear-agent"', self.js)
-
-    def test_plain_iife_no_bundler(self):
-        self.assertTrue(self.js.lstrip().startswith("/**"))
-        self.assertIn("(function ()", self.js)
-        for banned in ("import ", "require(", "export ", "=>{"):
-            self.assertNotIn(banned, self.js, "ESM/bundler syntax would need a build step")
-
-    def test_react_comes_from_the_sdk(self):
-        self.assertIn("window.__HERMES_PLUGIN_SDK__", self.js)
-        self.assertIn("SDK.React", self.js)
-        self.assertNotIn("cdn.", self.js)
-
     def test_no_external_assets(self):
         for text in (self.js, self.css):
-            self.assertNotRegex(text, r"https?://(?!127\.0\.0\.1)[a-z]", "external URL in the tab")
+            self.assertIsNone(
+                re.search(r"https?://(?!127\.0\.0\.1)[a-z]", text), "external URL in the tab"
+            )
         self.assertNotIn("@import", self.css)
 
     def test_calls_only_its_own_api_prefix(self):
         self.assertIn('"/api/plugins/linear-agent"', self.js)
 
     def test_degrades_when_components_are_missing(self):
-        for name in ("Card", "Button", "Badge", "Input"):
+        for name in ("Card", "CardContent", "Button", "Input"):
             self.assertIn("C.%s ||" % name, self.js)
 
     def test_theme_variables_only(self):
-        hardcoded = re.findall(r"(?<!var\()#[0-9a-fA-F]{3,6}", self.css)
-        # status colours are allowed, but they must sit behind a theme variable fallback
-        for value in hardcoded:
-            self.assertIn(value, (
-                "#111", "#fff", "#9aa0aa", "#16a34a", "#d97706", "#b45309",
-                "#111318", "#e5e7eb", "#f3f4f6", "#6b7280", "#2563eb",
-            ), "unexpected hardcoded colour %s" % value)
         for token in ("--card", "--border", "--accent", "--foreground", "--muted-foreground"):
             self.assertIn("var(%s" % token, self.css)
+        theme_only = re.findall(r"(?<!var\()#[0-9a-fA-F]{3,6}", self.css)
+        for value in theme_only:
+            self.assertIn(
+                value,
+                ("#111", "#fff", "#16a34a", "#d97706", "#b45309", "#e5e7eb", "#6b7280", "#2563eb", "#f3f4f6"),
+                "hardcoded colour %s (use a var fallback)" % value,
+            )
+
+    def test_status_colours_are_semantic(self):
+        self.assertIn("var(--success", self.css)
+        self.assertIn("var(--warning", self.css)
 
 
 if __name__ == "__main__":

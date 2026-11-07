@@ -1,23 +1,27 @@
 /**
  * Linear agent — dashboard plugin
  *
- * One job: choose which Hermes agent answers Linear.
+ * One job: choose which Hermes agent answers Linear issues.
  *
- * Plain IIFE, no build step: React comes from the dashboard SDK and every node is
- * React.createElement. No bundler, no npm, no bundled React — that is the point.
+ * Built strictly against the SDK surface exposed by web/src/plugins/registry.ts:
+ *   - SDK.fetchJSON for /api/plugins/linear-agent/*  (never bare fetch: the
+ *     dashboard sits behind gated auth + loopback tokens and fetchJSON carries them)
+ *   - SDK.hooks.useToast -> { showToast, toast }, rendered with SDK.components.Toast
+ *   - SDK.utils.cn for conditional classes
+ *   - SDK.sdkVersion, checked and degraded gracefully
  *
- * Backend: /api/plugins/linear-agent/{state,agent} (see plugin_api.py).
+ * Plain IIFE, no JSX, no bundler, no bundled React.
  */
 (function () {
   "use strict";
 
+  var registry = window.__HERMES_PLUGINS__;
   var SDK = window.__HERMES_PLUGIN_SDK__;
-  if (!SDK || !window.__HERMES_PLUGINS__ || typeof window.__HERMES_PLUGINS__.register !== "function") {
+  if (!registry || typeof registry.register !== "function" || !SDK || !SDK.React) {
     return;
   }
 
   var React = SDK.React;
-  if (!React) return;
   var h = React.createElement;
 
   var hooks = SDK.hooks || {};
@@ -26,91 +30,109 @@
   var useCallback = hooks.useCallback || React.useCallback;
   var useMemo = hooks.useMemo || React.useMemo;
 
-  var C = SDK.components || {};
+  // Constant per page load, so calling it unconditionally keeps hook order stable
+  // even on a host that predates useToast.
+  var useToastSafe =
+    typeof hooks.useToast === "function"
+      ? hooks.useToast
+      : function () {
+          return { showToast: null, toast: null };
+        };
 
-  // --- graceful degradation: an older host may not expose every primitive ---
-  function el(tag, className) {
-    return function Fallback(props) {
-      var rest = Object.assign({}, props);
-      delete rest.children;
-      return h(tag, Object.assign({ className: className }, rest), props && props.children);
-    };
-  }
-  var Card = C.Card || el("div", "la-card");
-  var CardHeader = C.CardHeader || el("div", "la-card-header");
-  var CardTitle = C.CardTitle || el("h3", "la-card-title");
-  var CardContent = C.CardContent || el("div", "la-card-content");
-  var Badge = C.Badge || el("span", "la-badge");
-  var Button = C.Button || el("button", "la-button");
-  var Input = C.Input || el("input", "la-input");
+  var C = SDK.components || {};
+  var utils = SDK.utils || {};
+  var cn =
+    typeof utils.cn === "function"
+      ? utils.cn
+      : function () {
+          return Array.prototype.slice.call(arguments).filter(Boolean).join(" ");
+        };
+
+  var Card = C.Card || fallback("div", "la-card");
+  var CardContent = C.CardContent || fallback("div", "la-card-content");
+  var Button = C.Button || fallback("button", "la-button");
+  var Input = C.Input || fallback("input", "la-input");
+  var Toast = C.Toast || null;
 
   var API = "/api/plugins/linear-agent";
+  var SUPPORTED_SDK_MAJOR = 1;
+
+  function fallback(tag, baseClass) {
+    return function Fallback(props) {
+      var rest = Object.assign({}, props);
+      var children = rest.children;
+      rest.className = cn(baseClass, rest.className);
+      delete rest.children;
+      return h(tag, rest, children);
+    };
+  }
+
+  function sdkMajor(version) {
+    var n = parseInt(String(version || "0").split(".")[0], 10);
+    return isNaN(n) ? 0 : n;
+  }
 
   function initials(name) {
     if (!name) return "?";
-    var parts = String(name).replace(/[^a-zA-Z0-9 _-]/g, " ").trim().split(/[\s_-]+/);
+    var parts = String(name)
+      .replace(/[^a-zA-Z0-9 _-]/g, " ")
+      .trim()
+      .split(/[\s_-]+/)
+      .filter(Boolean);
+    if (!parts.length) return "?";
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
     return (parts[0][0] + parts[1][0]).toUpperCase();
-  }
-
-  function messageOf(body, status) {
-    var detail = body && (body.detail || body.message || body.error);
-    if (!detail) return "HTTP " + status;
-    if (typeof detail === "string") return detail;
-    try {
-      return JSON.stringify(detail);
-    } catch (e) {
-      return "HTTP " + status;
-    }
   }
 
   function activeLabel(active) {
     return active || "the gateway default agent";
   }
 
+  function messageOf(err) {
+    if (!err) return "Unknown error";
+    if (typeof err === "string") return err;
+    // SDK.fetchJSON throws ApiError with a user-facing sentence in .message
+    return String(err.message || err.detail || err);
+  }
+
   function StatusPill(props) {
     var bridge = props.bridge || {};
     if (bridge.reachable) {
-      var text = "bridge reachable" + (bridge.version ? " · v" + bridge.version : "");
       return h(
         "span",
         { className: "la-pill la-pill-ok", title: bridge.url || "" },
         h("span", { className: "la-dot la-dot-ok" }),
-        text
+        "bridge reachable" + (bridge.version ? " · v" + bridge.version : "")
       );
     }
-    var err = bridge.error || "bridge unreachable";
     return h(
       "span",
-      { className: "la-pill la-pill-warn", title: err },
+      { className: "la-pill la-pill-warn", title: bridge.error || "" },
       h("span", { className: "la-dot la-dot-warn" }),
       "bridge unreachable"
     );
   }
 
   function ProfileCard(props) {
-    var name = props.name;
-    var selected = props.selected;
-    var disabled = props.disabled;
     return h(
       "button",
       {
         type: "button",
-        className: "la-profile" + (selected ? " la-profile-selected" : ""),
-        "aria-pressed": selected ? "true" : "false",
-        disabled: disabled,
+        className: cn("la-profile", props.selected && "la-profile-selected"),
+        "aria-pressed": props.selected ? "true" : "false",
+        disabled: props.disabled,
         onClick: function () {
-          props.onSelect(name);
+          props.onSelect(props.name);
         },
       },
-      h("span", { className: "la-avatar" }, initials(name)),
+      h("span", { className: "la-avatar" }, initials(props.name)),
       h(
         "span",
         { className: "la-profile-text" },
-        h("span", { className: "la-profile-name" }, name || "default"),
-        h("span", { className: "la-profile-sub" }, name ? "profile" : "gateway default")
+        h("span", { className: "la-profile-name" }, props.name || "default"),
+        h("span", { className: "la-profile-sub" }, props.name ? "profile" : "gateway default")
       ),
-      selected ? h("span", { className: "la-check", "aria-hidden": "true" }, "✓") : null
+      props.selected ? h("span", { className: "la-check", "aria-hidden": "true" }, "✓") : null
     );
   }
 
@@ -123,11 +145,7 @@
         null,
         h("p", { className: "la-error-title" }, "Could not load the Linear agent settings"),
         h("p", { className: "la-error-body" }, props.message),
-        h(
-          Button,
-          { type: "button", className: "la-button", onClick: props.onRetry },
-          "Retry"
-        )
+        h(Button, { type: "button", onClick: props.onRetry }, "Retry")
       )
     );
   }
@@ -135,7 +153,7 @@
   function AgentPage() {
     var state = useState({ loading: true, error: "", data: null });
     var current = state[0];
-    var set = state[1];
+    var setState = state[1];
 
     var pick = useState("");
     var picked = pick[0];
@@ -145,43 +163,56 @@
     var isSaving = saving[0];
     var setSaving = saving[1];
 
-    var toast = useState("");
-    var message = toast[0];
-    var setMessage = toast[1];
-
     var filter = useState("");
     var query = filter[0];
     var setQuery = filter[1];
 
-    var load = useCallback(function (isRetry) {
-      set(function (prev) {
-        return { loading: true, error: "", data: isRetry ? prev.data : null };
-      });
-      fetch(API + "/state", { headers: { Accept: "application/json" } })
-        .then(function (r) {
-          return r.json().then(
-            function (body) {
-              if (!r.ok) throw new Error(messageOf(body, r.status));
-              return body;
-            },
-            function () {
-              if (!r.ok) throw new Error("HTTP " + r.status);
-              return {};
-            }
-          );
-        })
-        .then(function (data) {
-          set({ loading: false, error: "", data: data });
-          setPicked(data.active || "");
-        })
-        .catch(function (err) {
-          set({ loading: false, error: String((err && err.message) || err), data: null });
-        });
-    }, []);
+    // SDK toast when the host provides one; the inline notice is the fallback.
+    var toastState = useToastSafe();
+    var notice = useState(null);
+    var inlineNotice = notice[0];
+    var setInlineNotice = notice[1];
 
-    useEffect(function () {
-      load(false);
-    }, [load]);
+    function notify(message, type) {
+      if (toastState && typeof toastState.showToast === "function") {
+        toastState.showToast(message, type);
+      } else {
+        setInlineNotice({ message: message, type: type });
+      }
+    }
+
+    var load = useCallback(
+      function (isRetry) {
+        setState(function (prev) {
+          return { loading: true, error: "", data: isRetry ? prev.data : null };
+        });
+        if (typeof SDK.fetchJSON !== "function") {
+          setState({
+            loading: false,
+            error:
+              "This dashboard does not expose SDK.fetchJSON, so the plugin cannot authenticate its API calls. Update Hermes.",
+            data: null,
+          });
+          return;
+        }
+        Promise.resolve(SDK.fetchJSON(API + "/state"))
+          .then(function (data) {
+            setState({ loading: false, error: "", data: data });
+            setPicked((data && data.active) || "");
+          })
+          .catch(function (err) {
+            setState({ loading: false, error: messageOf(err), data: null });
+          });
+      },
+      []
+    );
+
+    useEffect(
+      function () {
+        load(false);
+      },
+      [load]
+    );
 
     var data = current.data || {};
     var profiles = data.profiles || [];
@@ -200,31 +231,49 @@
 
     function save() {
       setSaving(true);
-      setMessage("");
-      fetch(API + "/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ profile: picked }),
-      })
-        .then(function (r) {
-          return r.json().then(function (body) {
-            if (!r.ok) throw new Error(messageOf(body, r.status));
-            return body;
-          });
+      setInlineNotice(null);
+      Promise.resolve(
+        SDK.fetchJSON(API + "/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: picked }),
         })
+      )
         .then(function (next) {
-          set({ loading: false, error: "", data: next });
-          setPicked(next.active || "");
+          setState({ loading: false, error: "", data: next });
+          setPicked((next && next.active) || "");
           setSaving(false);
-          setMessage("Saved. Takes effect on the next Linear issue — no restart needed.");
+          notify("Saved. Takes effect on the next Linear issue — no restart needed.", "success");
         })
         .catch(function (err) {
           setSaving(false);
-          setMessage("Could not save: " + String((err && err.message) || err));
+          notify("Could not save: " + messageOf(err), "error");
         });
     }
 
     var dirty = (picked || "") !== (active || "");
+    var sdkWarning =
+      sdkMajor(SDK.sdkVersion) > SUPPORTED_SDK_MAJOR
+        ? "This tab was built for plugin SDK v" +
+          SUPPORTED_SDK_MAJOR +
+          " and the dashboard reports v" +
+          SDK.sdkVersion +
+          "; behaviour may differ."
+        : "";
+
+    var toastEl =
+      Toast && toastState && toastState.toast ? h(Toast, { toast: toastState.toast }) : null;
+    var inlineEl =
+      !toastEl && inlineNotice
+        ? h(
+            "p",
+            {
+              className: cn("la-toast", inlineNotice.type === "error" && "la-toast-bad"),
+              role: "status",
+            },
+            inlineNotice.message
+          )
+        : null;
 
     if (current.loading && !current.data) {
       return h(
@@ -252,10 +301,11 @@
     return h(
       "div",
       { className: "la-root" },
+      sdkWarning ? h("p", { className: "la-note la-note-warn" }, sdkWarning) : null,
       h(
         "div",
         { className: "la-head" },
-        h("div", null, h("h1", { className: "la-title" }, "Linear agent")),
+        h("h1", { className: "la-title" }, "Linear agent"),
         h(StatusPill, { bridge: data.bridge })
       ),
       h(
@@ -264,6 +314,13 @@
         "Issues are answered by ",
         h("strong", { className: "la-accent" }, activeLabel(active)),
         "."
+      ),
+      h(
+        "p",
+        { className: "la-value" },
+        "agent_profile: ",
+        h("code", null, active || "(unset — gateway default)"),
+        data.settings_path ? h("span", { className: "la-value-path" }, "  ·  " + data.settings_path) : null
       ),
       data.env_override
         ? h(
@@ -283,7 +340,7 @@
               h(
                 "p",
                 { className: "la-note" },
-                "The bridge will answer as the gateway default agent until a profile exists."
+                "The bridge answers as the gateway default agent until a profile exists."
               )
             )
           )
@@ -292,7 +349,7 @@
             null,
             profiles.length > 8
               ? h(Input, {
-                  className: "la-input la-filter",
+                  className: cn("la-filter"),
                   placeholder: "Filter profiles…",
                   value: query,
                   onChange: function (e) {
@@ -303,15 +360,13 @@
             h(
               "div",
               { className: "la-grid" },
-              profiles.indexOf("") === -1
-                ? h(ProfileCard, {
-                    key: "__default__",
-                    name: "",
-                    selected: !picked,
-                    disabled: isSaving,
-                    onSelect: setPicked,
-                  })
-                : null,
+              h(ProfileCard, {
+                key: "__default__",
+                name: "",
+                selected: !picked,
+                disabled: isSaving,
+                onSelect: setPicked,
+              }),
               visible.map(function (name) {
                 return h(ProfileCard, {
                   key: name,
@@ -323,7 +378,7 @@
               })
             ),
             visible.length === 0
-              ? h("p", { className: "la-muted" }, "No profile matches “" + query + "”.")
+              ? h("p", { className: "la-muted" }, 'No profile matches "' + query + '"')
               : null,
             h(
               "div",
@@ -332,7 +387,7 @@
                 Button,
                 {
                   type: "button",
-                  className: "la-button la-button-primary",
+                  className: cn("la-button-primary"),
                   disabled: isSaving || !dirty,
                   onClick: save,
                 },
@@ -344,7 +399,7 @@
                     Button,
                     {
                       type: "button",
-                      className: "la-button la-button-quiet",
+                      className: cn("la-button-quiet"),
                       disabled: isSaving,
                       onClick: function () {
                         setPicked(active || "");
@@ -355,25 +410,17 @@
                 : null
             )
           ),
-      message
-        ? h(
-            "p",
-            {
-              className: "la-toast" + (message.indexOf("Could not") === 0 ? " la-toast-bad" : ""),
-              role: "status",
-            },
-            message
-          )
-        : null,
+      inlineEl,
       h(
         "p",
         { className: "la-note" },
         "You can also label an issue with a profile name — ",
         profiles.filter(Boolean).slice(0, 4).join(", ") || "cody, appy",
         " — to route just that issue."
-      )
+      ),
+      toastEl
     );
   }
 
-  window.__HERMES_PLUGINS__.register("linear-agent", AgentPage);
+  registry.register("linear-agent", AgentPage);
 })();
