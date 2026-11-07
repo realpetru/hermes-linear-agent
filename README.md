@@ -76,6 +76,12 @@ per profile on the host, the active one marked, and a Save button that writes th
 Bridge reachability and its version sit in the header, and a failure renders an error
 card with Retry rather than an empty page.
 
+The tab also edits **label routing** as rows — a label, the agent it should reach, and a
+remove button — and serialises to the same `routing` setting the JSON config field writes.
+A label whose name matches no profile falls back to the configured agent; a rule pointing
+at a profile that no longer exists is ignored with a warning instead of sending the run to
+a 404.
+
 It is deliberately buildless — plain IIFE, React from the dashboard SDK, no npm — so it
 loads on hosts that have no Node toolchain, including the one it was written on.
 

@@ -12,6 +12,16 @@
   dashboard SDK (`window.__HERMES_PLUGIN_SDK__`), with no bundler, no npm and no React
   vendored into the repo. It works on a machine that has no Node installed — which is
   where this plugin was developed.
+- **Label routing without hand-written JSON.** The tab edits `routing` as rows: a label,
+  an agent picked from the host's real profiles, and an × to remove it. It serialises to
+  the same setting the raw JSON field writes, so both stay in sync. The form's own field
+  description now carries a copy-pasteable example
+  (`{"cody": "cody", "urgent-bug": "cody"}`) because the desktop form has no placeholder.
+- **Fixed: a routing typo no longer kills the session.** `routing: {"bug": "typo"}` used
+  to hand `typo` straight to the adapter, which requested `/p/typo/v1/runs` and got a
+  404. Unknown targets are now ignored with one warning and the precedence chain
+  continues (label route -> `agent_profile` -> gateway default), matching what the
+  auto-detected label path already did.
 - **Gray failure, not a blank tab.** If the API cannot be reached the tab renders an
   error card with a Retry button and the server's own message; unknown profiles are
   rejected by the backend with the same near-miss suggestion the CLI prints.

@@ -29,8 +29,10 @@ from linear_hermes.profiles import ProfileError, available_profiles, validate_pr
 from linear_hermes.settings import (  # noqa: E402
     env_shadows_profile,
     set_stored_profile,
+    set_stored_routing,
     settings_path,
     stored_profile,
+    stored_routing,
 )
 
 try:  # the host dashboard ships FastAPI; the standalone bridge and tests may not
@@ -49,6 +51,59 @@ def active_profile() -> str:
     if env:
         return env
     return stored_profile()
+
+
+def effective_routing() -> dict:
+    """THE routing map in force: LINEAR_AGENT_ROUTING (JSON) beats the settings file."""
+    raw = (os.environ.get("LINEAR_AGENT_ROUTING") or "").strip()
+    if raw:
+        import json
+
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return stored_routing()
+        if isinstance(parsed, dict):
+            return {
+                str(k).strip().lower(): str(v).strip().lower()
+                for k, v in parsed.items()
+                if str(k).strip() and str(v).strip()
+            }
+        return stored_routing()
+    return stored_routing()
+
+
+def routing_from_env() -> bool:
+    return bool((os.environ.get("LINEAR_AGENT_ROUTING") or "").strip())
+
+
+def apply_routing(mapping) -> dict:
+    """Validate every target, then persist. Raises ValueError with a human message."""
+    if mapping is None:
+        raise ValueError('send {"routing": {"<label>": "<profile>"}}')
+    if not isinstance(mapping, dict):
+        raise ValueError("routing must be an object of label -> profile")
+    clean = {}
+    for label, profile in mapping.items():
+        if not isinstance(label, str) or not isinstance(profile, str):
+            raise ValueError('routing entries must be text: {"label": "profile"}')
+        label = label.strip()
+        if not label:
+            raise ValueError("routing entries need a label")
+        if not profile.strip():
+            raise ValueError(
+                "routing entries need a profile — the agent that label should go to"
+            )
+        try:
+            target = validate_profile(profile)
+        except ProfileError as exc:
+            raise ValueError(str(exc)) from exc
+        clean[label.lower()] = target
+    try:
+        set_stored_routing(clean)
+    except OSError as exc:
+        raise ValueError("could not write %s: %s" % (settings_path(), exc.strerror or exc)) from exc
+    return build_state()
 
 
 def bridge_url() -> str:
@@ -79,6 +134,8 @@ def build_state(url: str | None = None) -> dict:
         "bridge": bridge_state(url),
         "settings_path": settings_path(),
         "env_override": env_shadows_profile(),
+        "routing": effective_routing(),
+        "routing_from_env": routing_from_env(),
     }
 
 
@@ -108,6 +165,16 @@ if router is not None:  # pragma: no cover - exercised through the HTTP tests
     @router.get("/state")
     def get_state() -> dict:
         return build_state()
+
+    @router.post("/routing")
+    def set_routing(payload: dict | None = None) -> dict:
+        body = payload or {}
+        if "routing" not in body:
+            raise HTTPException(status_code=400, detail='send {"routing": {"label": "profile"}}')
+        try:
+            return apply_routing(body.get("routing"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/agent")
     def set_agent(payload: dict | None = None) -> dict:

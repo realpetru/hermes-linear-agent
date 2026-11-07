@@ -150,6 +150,25 @@
     );
   }
 
+  function routingToRows(map) {
+    var rows = [];
+    var keys = Object.keys(map || {}).sort();
+    for (var i = 0; i < keys.length; i++) {
+      rows.push({ label: keys[i], profile: map[keys[i]] });
+    }
+    return rows;
+  }
+
+  function rowsToRouting(rows) {
+    var out = {};
+    for (var i = 0; i < (rows || []).length; i++) {
+      var label = String(rows[i].label || "").trim().toLowerCase();
+      var profile = String(rows[i].profile || "").trim();
+      if (label && profile) out[label] = profile;
+    }
+    return out;
+  }
+
   function AgentPage() {
     var state = useState({ loading: true, error: "", data: null });
     var current = state[0];
@@ -166,6 +185,16 @@
     var filter = useState("");
     var query = filter[0];
     var setQuery = filter[1];
+
+    // Label routing is edited as rows and serialised to the same setting the raw
+    // JSON field writes.
+    var routingState = useState([]);
+    var rows = routingState[0];
+    var setRows = routingState[1];
+
+    var routingSavingState = useState(false);
+    var isRoutingSaving = routingSavingState[0];
+    var setRoutingSaving = routingSavingState[1];
 
     // SDK toast when the host provides one; the inline notice is the fallback.
     var toastState = useToastSafe();
@@ -199,6 +228,7 @@
           .then(function (data) {
             setState({ loading: false, error: "", data: data });
             setPicked((data && data.active) || "");
+            setRows(routingToRows((data && data.routing) || {}));
           })
           .catch(function (err) {
             setState({ loading: false, error: messageOf(err), data: null });
@@ -218,11 +248,16 @@
     var profiles = data.profiles || [];
     var active = data.active || "";
 
+    // "default" is the gateway default under another name, and the synthetic card
+    // below already covers it — listing both shows the same agent twice.
     var visible = useMemo(
       function () {
+        var real = profiles.filter(function (p) {
+          return p && String(p).toLowerCase() !== "default";
+        });
         var q = (query || "").trim().toLowerCase();
-        if (!q) return profiles;
-        return profiles.filter(function (p) {
+        if (!q) return real;
+        return real.filter(function (p) {
           return String(p).toLowerCase().indexOf(q) !== -1;
         });
       },
@@ -251,7 +286,54 @@
         });
     }
 
+    function saveRouting() {
+      setRoutingSaving(true);
+      setInlineNotice(null);
+      Promise.resolve(
+        SDK.fetchJSON(API + "/routing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ routing: rowsToRouting(rows) }),
+        })
+      )
+        .then(function (next) {
+          setState({ loading: false, error: "", data: next });
+          setRows(routingToRows((next && next.routing) || {}));
+          setRoutingSaving(false);
+          notify("Routing saved. Takes effect on the next Linear issue.", "success");
+        })
+        .catch(function (err) {
+          setRoutingSaving(false);
+          notify("Could not save routing: " + messageOf(err), "error");
+        });
+    }
+
+    function updateRow(index, changes) {
+      setRows(function (prev) {
+        var copy = prev.slice();
+        copy[index] = Object.assign({}, copy[index], changes);
+        return copy;
+      });
+    }
+
+    function addRow() {
+      setRows(function (prev) {
+        return prev.concat([{ label: "", profile: "" }]);
+      });
+    }
+
+    function removeRow(index) {
+      setRows(function (prev) {
+        return prev.filter(function (_, i) {
+          return i !== index;
+        });
+      });
+    }
+
+    var effective = picked === "default" ? "" : picked || "";
     var dirty = (picked || "") !== (active || "");
+    var routingDirty =
+      JSON.stringify(rowsToRouting(rows)) !== JSON.stringify(data.routing || {});
     var sdkWarning =
       sdkMajor(SDK.sdkVersion) > SUPPORTED_SDK_MAJOR
         ? "This tab was built for plugin SDK v" +
@@ -363,7 +445,7 @@
               h(ProfileCard, {
                 key: "__default__",
                 name: "",
-                selected: !picked,
+                selected: !effective,
                 disabled: isSaving,
                 onSelect: setPicked,
               }),
@@ -371,7 +453,7 @@
                 return h(ProfileCard, {
                   key: name,
                   name: name,
-                  selected: picked === name,
+                  selected: effective === name,
                   disabled: isSaving,
                   onSelect: setPicked,
                 });
@@ -410,14 +492,106 @@
                 : null
             )
           ),
-      inlineEl,
       h(
-        "p",
-        { className: "la-note" },
-        "You can also label an issue with a profile name — ",
-        profiles.filter(Boolean).slice(0, 4).join(", ") || "cody, appy",
-        " — to route just that issue."
+        Card,
+        { className: "la-card" },
+        h(
+          CardContent,
+          null,
+          h("h3", { className: "la-routing-title" }, "Label routing"),
+          h(
+            "p",
+            { className: "la-note" },
+            "Send issues carrying a specific label to a specific agent. A label that names no profile falls back to the agent above."
+          ),
+          data.routing_from_env
+            ? h(
+                "p",
+                { className: "la-note la-note-warn" },
+                "LINEAR_AGENT_ROUTING is set in the environment; it takes precedence over what you save here."
+              )
+            : null,
+          rows.length === 0
+            ? h("p", { className: "la-muted" }, "No rules yet — every issue goes to the agent above.")
+            : null,
+          rows.map(function (row, index) {
+            return h(
+              "div",
+              { className: "la-row", key: index },
+              h(Input, {
+                className: cn("la-input"),
+                placeholder: "label (e.g. bug)",
+                value: row.label,
+                onChange: function (e) {
+                  updateRow(index, { label: e.target.value });
+                },
+              }),
+              h("span", { className: "la-arrow", "aria-hidden": "true" }, "→"),
+              h(
+                "select",
+                {
+                  className: "la-select",
+                  value: row.profile,
+                  onChange: function (e) {
+                    updateRow(index, { profile: e.target.value });
+                  },
+                },
+                h("option", { value: "" }, "choose agent…"),
+                profiles
+                  .filter(Boolean)
+                  .map(function (name) {
+                    return h("option", { key: name, value: name }, name);
+                  })
+              ),
+              h(
+                Button,
+                {
+                  type: "button",
+                  className: cn("la-button-quiet", "la-row-remove"),
+                  onClick: function () {
+                    removeRow(index);
+                  },
+                  "aria-label": "Remove rule",
+                },
+                "×"
+              )
+            );
+          }),
+          h(
+            "div",
+            { className: "la-actions" },
+            h(
+              Button,
+              {
+                type: "button",
+                className: cn("la-button"),
+                onClick: addRow,
+                disabled: isRoutingSaving,
+              },
+              "Add rule"
+            ),
+            h(
+              Button,
+              {
+                type: "button",
+                className: cn("la-button-primary"),
+                disabled: isRoutingSaving || !routingDirty,
+                onClick: saveRouting,
+              },
+              isRoutingSaving ? h("span", { className: "la-spinner", "aria-hidden": "true" }) : null,
+              isRoutingSaving ? "Saving…" : "Save routing"
+            )
+          ),
+          h(
+            "p",
+            { className: "la-note" },
+            "You can also label an issue with a profile name — ",
+            profiles.filter(Boolean).slice(0, 4).join(", ") || "cody, appy",
+            " — to route just that issue."
+          )
+        )
       ),
+      inlineEl,
       toastEl
     );
   }

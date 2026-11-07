@@ -76,6 +76,30 @@ def set_stored_profile(profile):
     return write_settings(values)
 
 
+def stored_routing():
+    """Label -> profile map from the settings file, normalised, junk dropped."""
+    raw = read_settings().get("routing")
+    if not isinstance(raw, dict):
+        return {}
+    clean = {}
+    for label, profile in raw.items():
+        if isinstance(label, str) and isinstance(profile, str):
+            if label.strip() and profile.strip():
+                clean[label.strip().lower()] = profile.strip().lower()
+    return clean
+
+
+def set_stored_routing(mapping):
+    values = read_settings()
+    clean = {}
+    for label, profile in (mapping or {}).items():
+        if isinstance(label, str) and isinstance(profile, str):
+            if label.strip() and profile.strip():
+                clean[label.strip().lower()] = profile.strip().lower()
+    values["routing"] = clean
+    return write_settings(values)
+
+
 def env_shadows_profile():
     """True when an env var would override what `agent set` writes."""
     return bool((os.environ.get("LINEAR_AGENT_PROFILE") or "").strip())

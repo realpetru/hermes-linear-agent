@@ -83,17 +83,31 @@ config_schema:
   agent_profile:
     type: str
     default: ""
-    description: "Hermes agent profile that answers Linear. Empty uses the gateway default."
+    description: >-
+      Which Hermes agent answers Linear. Write a profile name, e.g. cody — or appy,
+      studio, whichever agent should speak. Leave empty and the gateway's default agent
+      answers. On the Hermes dashboard, the Linear agent tab lists the profiles that
+      actually exist on this host; typing a name that does not exist is rejected.
     required: false
   routing:
     type: dict
     default: {}
-    description: "Optional label -> profile map; beats agent_profile for matching issues."
+    description: >-
+      Optional: send issues with a specific label to a specific profile. Example:
+      {"cody": "cody", "urgent-bug": "cody"} — the quoted text on the left is the Linear
+      label, the one on the right is the Hermes profile. Beats agent_profile for
+      matching issues; a label naming no profile falls through to agent_profile, and a
+      target naming no existing profile is ignored. The Linear agent dashboard tab edits
+      this as rows, so you never have to type JSON by hand.
     required: false
   bridge_url:
     type: str
     default: "http://127.0.0.1:8650"
-    description: "Base URL the status tool probes"
+    description: >-
+      Base URL the status tool probes for the bridge. If the plugin runs on the same
+      machine as the bridge use http://127.0.0.1:8650; if the bridge runs on another
+      host on your network, use its LAN address, e.g. http://192.168.1.50:8650 (and
+      remember that 127.0.0.1 inside a container means the container itself).
     required: false
   public_url:
     type: str

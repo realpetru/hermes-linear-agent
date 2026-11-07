@@ -94,20 +94,33 @@ class AssetsTests(unittest.TestCase):
         for name in ("Card", "CardContent", "Button", "Input"):
             self.assertIn("C.%s ||" % name, self.js)
 
-    def test_theme_variables_only(self):
-        for token in ("--card", "--border", "--accent", "--foreground", "--muted-foreground"):
-            self.assertIn("var(%s" % token, self.css)
-        theme_only = re.findall(r"(?<!var\()#[0-9a-fA-F]{3,6}", self.css)
-        for value in theme_only:
-            self.assertIn(
-                value,
-                ("#111", "#fff", "#16a34a", "#d97706", "#b45309", "#e5e7eb", "#6b7280", "#2563eb", "#f3f4f6"),
-                "hardcoded colour %s (use a var fallback)" % value,
-            )
+    def test_text_colour_follows_the_shell(self):
+        # This dashboard defines --foreground as a transparent colour, so text must
+        # inherit rather than assume a variable's contents (that produced invisible
+        # profile names on the real dashboard).
+        self.assertIn("color: inherit", self.css)
+        self.assertIn("color-mix(in srgb, currentColor", self.css)
+        self.assertIsNone(
+            re.search(r"^\s*color:\s*var\(--foreground", self.css, re.M),
+            "do not use --foreground as a text colour",
+        )
+
+    def test_surfaces_are_derived_not_assumed(self):
+        self.assertIn("background: color-mix(in srgb, currentColor", self.css)
+        self.assertIsNone(
+            re.search(r"background:\s*var\(--card", self.css),
+            "do not assume --card is a usable colour",
+        )
 
     def test_status_colours_are_semantic(self):
         self.assertIn("var(--success", self.css)
         self.assertIn("var(--warning", self.css)
+        self.assertIn("var(--accent, currentColor)", self.css)
+
+    def test_hardcoded_colours_are_only_status_fallbacks(self):
+        allowed = ("#fff", "#111", "#16a34a", "#d97706", "#b45309", "#2563eb")
+        for value in re.findall(r"(?<!var\()#[0-9a-fA-F]{3,6}", self.css):
+            self.assertIn(value, allowed, "hardcoded colour %s" % value)
 
 
 if __name__ == "__main__":

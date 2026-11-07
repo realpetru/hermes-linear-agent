@@ -14,6 +14,10 @@ would fail because the profile does not exist.
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 def issue_labels(payload):
     """Label names from an AgentSessionEvent payload, best effort.
@@ -59,11 +63,25 @@ def profile_for_labels(labels, available):
 
 
 def choose_profile(payload, agent_profile="", routing=None, available=None):
-    """Return the profile to run as, or "" for the gateway default. Never raises."""
+    """Return the profile to run as, or "" for the gateway default. Never raises.
+
+    An explicit map entry pointing at a profile that does not exist is ignored (with
+    one warning) rather than handed to the adapter: the gateway answers `/p/<name>`
+    with 404, so an unvalidated target turns a routing typo into a dead session.
+    """
     labels = issue_labels(payload)
+    known = {str(name).strip().lower() for name in (available or []) if name}
     for label, profile in (routing or {}).items():
         if str(label).lower() in labels and profile:
-            return str(profile).strip().lower()
+            target = str(profile).strip().lower()
+            if known and target not in known:
+                log.warning(
+                    "routing: label %r points at unknown profile %r, ignoring",
+                    label,
+                    target,
+                )
+                continue
+            return target
     matched = profile_for_labels(labels, available)
     if matched:
         return matched
