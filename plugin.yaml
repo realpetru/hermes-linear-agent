@@ -1,16 +1,14 @@
 name: linear-agent
 label: Linear Agent
 kind: standalone
-version: 1.3.3
+version: 1.3.4
 author: realpetru
 homepage: https://github.com/realpetru/hermes-linear-agent
 description: >
-  Turns Hermes into a first-class Linear agent. Assign an issue to the agent or
-  @mention it, and Hermes answers in the thread as its own app identity instead of
-  posting as a human. Ships both halves: a signature-verified webhook bridge that
-  speaks Linear's AgentSessionEvent API, and the tools to inspect that bridge and
-  generate the OAuth install URL. Works with any Hermes model and any public
-  hostname; everything host-specific is configuration, never code.
+  Turns Hermes into a first-class Linear agent. Assign an issue or @mention it and the
+  agent answers in the thread under its own app identity, not yours. Ships both halves:
+  a signature-verified webhook bridge, and the tools to inspect it and mint the OAuth
+  install URL. Any model, any hostname — host-specific details are configuration, not code.
 requires_hermes: ">=0.22.0"
 provides_tools:
   - linear_agent_status
@@ -65,44 +63,27 @@ config_schema:
     type: str
     default: ""
     description: >-
-      Which Hermes agent answers Linear. Write a profile name, e.g. cody — or appy,
-      studio, whichever agent should speak. Leave empty and the gateway's default agent
-      answers. On the Hermes dashboard, the Linear agent tab lists the profiles that
-      actually exist on this host; typing a name that does not exist is rejected.
+      Example: cody — or appy, studio. Leave empty to let the gateway's default agent
+      answer. A name that does not exist on this host is rejected.
     required: false
   routing:
     type: dict
     default: {}
     description: >-
-      Optional: send issues with a specific label to a specific profile. Example:
-      {"cody": "cody", "urgent-bug": "cody"} — the quoted text on the left is the Linear
-      label, the one on the right is the Hermes profile. Beats agent_profile for
-      matching issues; a label naming no profile falls through to agent_profile, and a
-      target naming no existing profile is ignored. The Linear agent dashboard tab edits
-      this as rows, so you never have to type JSON by hand.
+      Optional. Example: {"cody": "cody", "ui-bug": "appy"} — Linear label on the left,
+      Hermes profile on the right. Wins over the agent profile for matching issues.
     required: false
   bridge_url:
     type: str
     default: "http://127.0.0.1:8650"
     description: >-
-      Base URL the status tool probes for the bridge. If the plugin runs on the same
-      machine as the bridge use http://127.0.0.1:8650; if the bridge runs on another
-      host on your network, use its LAN address, e.g. http://192.168.1.50:8650 (and
-      remember that 127.0.0.1 inside a container means the container itself).
+      Where the bridge listens. Example: http://127.0.0.1:8650 on this machine, or the
+      LAN address if it runs elsewhere. Inside a container, 127.0.0.1 is the container.
     required: false
   public_url:
     type: str
     default: ""
     description: >-
-      Public base URL of the bridge, e.g. https://your-host.example with no trailing slash.
-      Linear posts webhooks to <this>/webhook — paste that exact URL into the app's Webhook
-      URL field yourself; nothing is registered automatically. The OAuth callback defaults
-      to <this>/oauth/callback, and LINEAR_REDIRECT_URI overrides it when the browser
-      finishing the install cannot reach the public host. LINEAR_AGENT_PUBLIC_URL is the
-      environment variable form of this setting.
-    required: false
-  timezone_offset_minutes:
-    type: int
-    default: 0
-    description: "Reserved for future reporting; stored for convenience only"
+      Example: https://linear.example.com — no trailing slash. Linear posts to
+      <this>/webhook (paste it into the app yourself) and returns to <this>/oauth/callback.
     required: false
