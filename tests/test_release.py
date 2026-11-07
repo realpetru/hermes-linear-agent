@@ -4,7 +4,8 @@ import re
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-EXPECTED = "1.3.2"
+_manifest = (pathlib.Path(__file__).resolve().parents[1] / "plugin.yaml").read_text(encoding="utf-8")
+EXPECTED = re.search(r"^version: (\S+)$", _manifest, re.M).group(1)
 VALID_KINDS = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 REQUIRED_CATALOG_KEYS = ("name", "repo", "sha", "description", "maintainer")
 
