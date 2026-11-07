@@ -26,7 +26,7 @@ def main():
 
     store = DeliveryStore(cfg.db_path, max_concurrency=cfg.max_concurrency)
     # An agent must post as the app, so prefer the app token. The personal API key
-    # is a dev fallback only: activities posted with it appear under the installer's identity.
+    # is a dev fallback only: activities posted with it appear under the installer’s identity.
     tokens = load_tokens(cfg.linear_token_path) if cfg.linear_token_path else None
     if tokens and cfg.linear_client_id:
         provider = TokenProvider(
@@ -48,9 +48,27 @@ def main():
         )
         log.warning("no Linear credential yet — server starts, Linear calls will "
                     "fail with a clear message until you run `make authorize`")
+    # One obvious setting, validated at boot with a human message rather than a trace.
+    from .profiles import ProfileError, available_profiles, validate_profile
+    from .routing import choose_profile
+
+    try:
+        validate_profile(cfg.agent_profile)
+        for label, prof in (cfg.routing or {}).items():
+            validate_profile(prof)
+    except ProfileError as exc:
+        log.error("%s", exc)
+        raise SystemExit(2)
+    log.info("agent profile: %s", cfg.agent_profile or "(gateway default)")
+    if cfg.routing:
+        log.info("label routing: %s", ", ".join("%s -> %s" % (k, v) for k, v in cfg.routing.items()))
+
+    def adapter_for(payload):
+        return build_adapter(cfg, profile=choose_profile(payload, cfg.agent_profile, cfg.routing))
+
     handler = AgentSessionHandler(
         linear, build_adapter(cfg), store, cfg.agent_name,
-        heartbeat_seconds=cfg.heartbeat_seconds,
+        heartbeat_seconds=cfg.heartbeat_seconds, adapter_for=adapter_for,
     )
 
     def on_event(payload, headers):
@@ -62,7 +80,7 @@ def main():
         runtime_status.record_session(stamp)
         prompt = handler.build_prompt(payload)
         try:
-            handler.run_session(info["session"], prompt)
+            handler.run_session(info["session"], prompt, payload=payload)
         except Exception as exc:  # noqa: BLE001 - surfaced at /status
             runtime_status.record_failure("sessions: %s" % exc, stamp)
             raise

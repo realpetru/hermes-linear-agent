@@ -13,13 +13,15 @@ BODY = json.dumps({"type": "AgentSessionEvent", "action": "created",
                    "agentSession": {"id": "sess-1"}}).encode()
 
 
-def make_cfg(port):
-    return Config(
+def make_cfg(port, **over):
+    base = dict(
         webhook_secret=SECRET, linear_api_key="x", hermes_adapter="subprocess",
         gateway_url="", gateway_token="", hermes_bin="hermes", port=port,
         bind="127.0.0.1", max_concurrency=1, db_path="/tmp/x.sqlite3",
         agent_name="Hermes", log_level="INFO",
     )
+    base.update(over)
+    return Config(**base)
 
 
 class ServerTests(unittest.TestCase):
@@ -67,11 +69,30 @@ class ServerTests(unittest.TestCase):
             urllib.request.urlopen("http://127.0.0.1:%d/oauth/callback" % self.port, timeout=5)
         self.assertEqual(ctx.exception.code, 400)
 
-    def test_oauth_callback_without_configured_app_is_500(self):
-        """No client id/secret yet: say so plainly instead of a 404."""
+    def test_oauth_callback_without_state_is_rejected(self):
+        """A state-changing GET with no CSRF state must not exchange anything."""
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(
                 "http://127.0.0.1:%d/oauth/callback?code=abc" % self.port, timeout=5
+            )
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_oauth_callback_with_forged_state_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(
+                "http://127.0.0.1:%d/oauth/callback?code=abc&state=1.deadbeef" % self.port, timeout=5
+            )
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_oauth_callback_without_configured_app_is_500(self):
+        """Past the CSRF gate but no client id configured: say so, do not 404."""
+        from linear_hermes.oauth import make_state
+
+        state = make_state(SECRET)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(
+                "http://127.0.0.1:%d/oauth/callback?code=abc&state=%s" % (self.port, state),
+                timeout=5,
             )
         self.assertEqual(ctx.exception.code, 500)
 
@@ -82,6 +103,18 @@ class ServerTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.code, 400)
 
+    def test_valid_state_gets_past_the_csrf_gate(self):
+        """With a good state the request reaches configuration, i.e. 500 not 400."""
+        from linear_hermes.oauth import make_state
+
+        state = make_state(SECRET)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(
+                "http://127.0.0.1:%d/oauth/callback?code=abc&state=%s" % (self.port, state),
+                timeout=5,
+            )
+        self.assertEqual(ctx.exception.code, 500)  # no client id configured here
+
     def test_health(self):
         with urllib.request.urlopen("http://127.0.0.1:%d/healthz" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
@@ -89,3 +122,36 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplayWindowTests(unittest.TestCase):
+    """LINEAR_MAX_SKEW_SECONDS is either implemented or must not be documented."""
+
+    def setUp(self):
+        import json as _json
+        import time as _time
+
+        from linear_hermes.signature import compute_signature
+
+        self.seen = []
+        self.httpd = serve(make_cfg(0, max_skew_seconds=60), lambda p, h: self.seen.append(p))
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        body = _json.dumps({"type": "AgentSessionEvent", "action": "created",
+                            "agentSession": {"id": "s1"},
+                            "webhookTimestamp": int((_time.time() - 600) * 1000)}).encode()
+        self.body = body
+        self.sig = compute_signature(SECRET, body)
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def test_stale_delivery_rejected_when_window_enabled(self):
+        req = urllib.request.Request("http://127.0.0.1:%d/webhook" % self.port,
+                                     data=self.body, method="POST")
+        req.add_header("Linear-Signature", self.sig)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 401)
+        self.assertEqual(self.seen, [])

@@ -26,18 +26,29 @@ class AdapterError(RuntimeError):
 class GatewayAdapter:
     """Preferred transport: the Hermes API server. Never expose it unauthenticated."""
 
-    def __init__(self, base_url, api_key="", timeout=900, poll_interval=1.5):
+    def __init__(self, base_url, api_key="", timeout=900, poll_interval=1.5, profile=""):
         if not base_url:
             raise AdapterError("HERMES_GATEWAY_URL is required")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.poll_interval = poll_interval
+        self.profile = (profile or "").strip().lower()
+
+    def _base(self):
+        """The shared listener serves profiles under /p/<profile>/.
+
+        With no profile the URL is exactly what it always was, so an install that
+        never sets LINEAR_AGENT_PROFILE behaves identically to before.
+        """
+        if not self.profile:
+            return self.base_url
+        return "%s/p/%s" % (self.base_url, self.profile)
 
     def _request(self, path, payload=None, idempotency_key=None):
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = urllib.request.Request(
-            self.base_url + path, data=data, method="POST" if data else "GET"
+            self._base() + path, data=data, method="POST" if data else "GET"
         )
         if data:
             req.add_header("Content-Type", "application/json")
@@ -111,7 +122,9 @@ class SubprocessAdapter:
         return (proc.stdout or "").strip()
 
 
-def build_adapter(cfg):
+def build_adapter(cfg, profile=None):
+    """profile overrides cfg.agent_profile (used for per-issue routing)."""
+    chosen = profile if profile is not None else getattr(cfg, "agent_profile", "")
     if cfg.hermes_adapter == "gateway":
-        return GatewayAdapter(cfg.gateway_url, cfg.gateway_token)
-    return SubprocessAdapter(cfg.hermes_bin)
+        return GatewayAdapter(cfg.gateway_url, cfg.gateway_token, profile=chosen)
+    return SubprocessAdapter(cfg.hermes_bin, profile=chosen or None)

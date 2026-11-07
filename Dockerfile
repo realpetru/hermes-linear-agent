@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir .
 ENV PYTHONUNBUFFERED=1 \
     PORT=8650 \
     BIND=0.0.0.0 \
-    STATE_DB=/data/state.sqlite3
+    STATE_DB=/data/state.sqlite3 \
+    LINEAR_TOKEN_PATH=/data/linear-tokens.json
 
 VOLUME ["/data"]
 EXPOSE 8650

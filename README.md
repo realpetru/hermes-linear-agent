@@ -31,7 +31,8 @@ hermes plugins enable linear-agent
 
 hermes linear-agent authorize     # prints the OAuth URL — open as workspace admin
 hermes linear-agent serve         # start the bridge (one process, stdlib only)
-hermes linear-agent status        # reachability, counters, missing config
+hermes linear-agent status        # reachability, counters, missing config, active agent
+hermes linear-agent agent         # which Hermes agent answers Linear, and what else exists
 ```
 
 Then assign any issue to the agent in Linear. You should see a `thought` within ten
@@ -67,12 +68,54 @@ a user never has to wire up a second deployment.
 server starts, logs one warning, and fails only when Linear is actually called, with a
 message telling the operator to run `authorize`.
 
+## Which agent answers
+
+By default the bridge runs whatever agent the Hermes gateway serves by default. If you
+run more than one agent (profiles), say which one answers Linear:
+
+```bash
+hermes linear-agent agent                       # who answers now, and what else exists
+export LINEAR_AGENT_PROFILE=cody                # Linear is handled by the cody agent
+```
+
+That is the whole setting. An empty value means "let the gateway decide", which is
+exactly what an existing install already does — nothing changes unless you set it.
+
+Check it anytime with `hermes linear-agent agent`, which prints the active agent and
+every profile available on the host. A name that does not exist fails at startup with
+a list of valid ones and a near-miss suggestion, not a stack trace.
+
+### Routing specific issues elsewhere
+
+If you want one workspace where different issues go to different agents, add a label map:
+
+```bash
+export LINEAR_AGENT_ROUTING='{"cody": "cody", "content": "studio"}'
+```
+
+Precedence, highest first:
+
+1. **a label route** — an issue carrying the `cody` label is answered by the `cody` agent
+2. **`LINEAR_AGENT_PROFILE`** — the default for everything else
+3. **the gateway default** — when neither is set
+
+First matching label wins, in the order you wrote the map. Labels are matched
+case-insensitively. A payload without labels simply falls through to the default.
+
+One honest limitation: the profile decides **which agent thinks**, not what Linear sees.
+The actor in the thread is always the Linear app, because that is what `actor=app`
+means. Two profiles are two brains behind one Linear identity.
+
 ## Security model
 
-- The **only** public route is `POST /webhook`, and it is useless without a valid
-  `Linear-Signature`: hex HMAC-SHA256 over the **raw** body, constant-time compared.
-  A bad or missing signature is rejected with `401` before JSON parsing and before any
-  thread is spawned. There is no unauthenticated path that can start a run.
+- **Two** public routes, both guarded:
+  - `POST /webhook` is useless without a valid `Linear-Signature`: hex HMAC-SHA256 over
+    the **raw** body, constant-time compared. A bad or missing signature is rejected
+    with `401` before JSON parsing and before any thread is spawned. There is no
+    unauthenticated path that can start a run.
+  - `GET /oauth/callback` changes state (it exchanges a code and writes the token
+    file), so it requires a signed `state` value minted by `make authorize` and valid
+    for 15 minutes. Without a matching state it answers `400` and touches nothing.
 - **Idempotency** on both the delivery id and the session id, so Linear's retries
   (1 min, 1 h, 6 h) can never double-spawn.
 - **Concurrency cap** with a fixed slot pool; over-capacity sessions get a message in
@@ -81,7 +124,11 @@ message telling the operator to run `authorize`.
 - **Secrets stay in Hermes.** Credentials are declared in the manifest and read from
   the environment Hermes provides. Nothing is written into the repo, and startup logs
   print `set`/`MISSING`, never a value.
-- The agent **never** posts with a personal API key — that is the bug this exists to fix.
+- **Honest limitation:** `LINEAR_API_KEY` exists as a development fallback. When it is
+  set without an app token, the bridge posts activities with it and they appear under
+  that person's identity — the exact bug this project exists to fix. It is declared as a
+  fallback, logged loudly at startup, and should be empty in a real install. There is no
+  way to post as the agent without the Linear app token from the `actor=app` install.
 
 ## Configuration
 
@@ -90,9 +137,14 @@ message telling the operator to run `authorize`.
 | `LINEAR_CLIENT_ID` | yes | OAuth app client id |
 | `LINEAR_CLIENT_SECRET` | yes | OAuth app client secret |
 | `LINEAR_WEBHOOK_SECRET` | yes | webhook signing secret |
-| `LINEAR_AGENT_PUBLIC_URL` | for a real install | public HTTPS base URL |
+| `LINEAR_AGENT_PUBLIC_URL` | for a real install | public HTTPS base URL (builds the authorize URL only) |
+| `LINEAR_REDIRECT_URI` | must match the app | exact callback URL sent in the authorize request **and** the token exchange; a mismatch is the usual `redirect_uri` install failure |
+| `LINEAR_TOKEN_PATH` | no | where the app token is stored, default `data/linear-tokens.json`, mode 0600 |
+| `LINEAR_API_KEY` | no, discouraged | personal-key fallback; posts under a human identity — see the limitation note |
 | `LINEAR_AGENT_BRIDGE_URL` | no | default `http://127.0.0.1:8650` |
 | `HERMES_GATEWAY_URL` / `HERMES_GATEWAY_TOKEN` | for the gateway adapter | Hermes API server |
+| `LINEAR_AGENT_PROFILE` | no | Hermes agent profile that answers Linear; empty = gateway default |
+| `LINEAR_AGENT_ROUTING` | no | JSON label → profile map; beats `LINEAR_AGENT_PROFILE` |
 | `HERMES_ADAPTER` | no | `gateway` (default) or `subprocess` |
 | `HEARTBEAT_SECONDS` | no | default 45; interim "still working" thought, `0` disables |
 | `MAX_CONCURRENCY` | no | default 3 |

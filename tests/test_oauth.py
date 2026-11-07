@@ -31,6 +31,24 @@ class OAuthTests(unittest.TestCase):
         self.assertTrue(oauth.needs_refresh(rec, now=800))
         self.assertFalse(oauth.needs_refresh({}, now=9e9))
 
+    def test_state_round_trips(self):
+        state = oauth.make_state("secret", now=1000)
+        self.assertTrue(oauth.verify_state("secret", state, now=1000))
+
+    def test_state_expires(self):
+        state = oauth.make_state("secret", now=1000)
+        self.assertFalse(oauth.verify_state("secret", state, now=1000 + 901))
+
+    def test_state_rejects_tampering(self):
+        state = oauth.make_state("secret", now=1000)
+        stamp, _, sig = state.partition(".")
+        self.assertFalse(oauth.verify_state("secret", stamp + ".deadbeef", now=1000))
+        self.assertFalse(oauth.verify_state("other-secret", state, now=1000))
+
+    def test_state_required(self):
+        self.assertFalse(oauth.verify_state("secret", "", now=1000))
+        self.assertFalse(oauth.verify_state("secret", "garbage", now=1000))
+
     def test_save_tokens_is_0600(self):
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "tok.json")

@@ -49,6 +49,12 @@ class DeliveryStore:
             except sqlite3.IntegrityError:
                 return False
 
+    def unclaim(self, key):
+        """Give a claim back (used when we refuse for capacity, so a retry works)."""
+        with self._lock:
+            self._conn.execute("DELETE FROM claims WHERE key = ?", (key,))
+            self._conn.commit()
+
     # -- concurrency -----------------------------------------------------
     def try_acquire_slot(self, session_id, stale_after=7200):
         """Reserve a slot. Stale slots (crashed worker) are swept first."""

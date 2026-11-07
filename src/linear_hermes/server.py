@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -12,6 +13,7 @@ from .signature import HEADER, verify_signature
 
 log = logging.getLogger(__name__)
 
+SERVICE_VERSION = "1.1.0"
 MAX_BODY = 1 << 20  # 1 MiB: Linear payloads are far smaller
 
 
@@ -19,8 +21,9 @@ def status_info():
     """Small, non-sensitive status payload for the plugin's status tool."""
     from . import runtime_status
 
-    info = {"status": "ok", "service": "linear-agent", "version": "1.0.0"}
+    info = {"status": "ok", "service": "linear-agent", "version": SERVICE_VERSION}
     info.update(runtime_status.snapshot())
+    info["agent_profile"] = os.environ.get("LINEAR_AGENT_PROFILE", "").strip().lower() or "(gateway default)"
     info["configured"] = {
         "webhook_secret": bool(os.environ.get("LINEAR_WEBHOOK_SECRET")),
         "client_id": bool(os.environ.get("LINEAR_CLIENT_ID")),
@@ -33,7 +36,7 @@ def make_handler(cfg, on_event):
     """on_event(payload, headers) runs in a worker thread after a 200 is sent."""
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "hermes-linear-agent/0.1"
+        server_version = "hermes-linear-agent/1.1.0"
 
         def _send(self, code, body):
             raw = json.dumps(body).encode("utf-8")
@@ -53,9 +56,22 @@ def make_handler(cfg, on_event):
             self.wfile.write(body)
 
         def _oauth_callback(self):
-            """Finishing the install must be visible, not a 404."""
-            code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
-            error = (parse_qs(urlparse(self.path).query).get("error") or [""])[0]
+            """Finishing the install must be visible, not a 404.
+
+            This is a state-changing GET, so it verifies the signed ``state`` value
+            that ``make authorize`` / the authorize tool minted. Without it anyone
+            could replay an arbitrary code into the token store.
+            """
+            query = parse_qs(urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            error = (query.get("error") or [""])[0]
+            state = (query.get("state") or [""])[0]
+            from .oauth import verify_state
+
+            if not verify_state(cfg.webhook_secret, state):
+                log.warning("oauth callback rejected: missing or stale state")
+                return self._html(400, "Install link expired",
+                                  "Open the URL from `make authorize` again (links last 15 minutes).")
             if error:
                 return self._html(400, "Install declined", "Linear returned: %s" % error)
             if not code:
@@ -108,6 +124,17 @@ def make_handler(cfg, on_event):
                 payload = json.loads(body.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 return self._send(400, {"error": "invalid json"})
+
+            # Optional replay window (LINEAR_MAX_SKEW_SECONDS); off by default because
+            # Linear retries at 1 min / 1 h / 6 h and those are legitimate.
+            if cfg.max_skew_seconds > 0:
+                try:
+                    stamp = float(payload.get("webhookTimestamp") or 0) / 1000.0
+                except (TypeError, ValueError):
+                    stamp = 0.0
+                if not stamp or abs(time.time() - stamp) > cfg.max_skew_seconds:
+                    log.warning("rejected webhook: timestamp outside the replay window")
+                    return self._send(401, {"error": "stale webhook"})
 
             headers = {k: v for k, v in self.headers.items()}
             self._send(200, {"ok": True})  # ack fast; Linear retries on 5xx

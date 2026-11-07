@@ -21,9 +21,13 @@ class AgentSessionHandler:
     store   - DeliveryStore
     """
 
-    def __init__(self, linear, adapter, store, agent_name="Hermes", heartbeat_seconds=45):
+    def __init__(self, linear, adapter, store, agent_name="Hermes", heartbeat_seconds=45,
+                 adapter_for=None):
         self.linear = linear
         self.adapter = adapter
+        # adapter_for(payload) lets one bridge answer different issues as different
+        # Hermes agents (label routing). Defaults to the single adapter.
+        self.adapter_for = adapter_for
         self.store = store
         self.agent_name = agent_name
         self.heartbeat_seconds = heartbeat_seconds
@@ -78,16 +82,21 @@ class AgentSessionHandler:
             return {"handled": False, "reason": "no_session_id"}
 
         delivery = self._delivery_id(payload, headers)
-        if delivery and not self.store.claim("delivery:" + str(delivery)):
-            log.info("duplicate delivery %s", delivery)
+        # Dedupe on (session, delivery): a Linear RETRY reuses the delivery id and is
+        # dropped, while a follow-up prompt in the same session has a new delivery id
+        # and must run. Keying on the session alone silently killed every follow-up.
+        replay_key = "replay:%s:%s" % (session, delivery or "none")
+        if delivery and not self.store.claim(replay_key):
+            log.info("duplicate delivery %s for session %s", delivery, session)
             return {"handled": False, "reason": "duplicate_delivery"}
-        if not self.store.claim("session:" + str(session)):
-            log.info("duplicate session %s", session)
-            return {"handled": False, "reason": "duplicate_session"}
+
         if not self.store.try_acquire_slot(session):
+            # Refusing for capacity must not consume the delivery, or the retry the
+            # message asks for would be rejected as a duplicate.
+            self.store.unclaim(replay_key)
             self.linear.post_activity(
                 session, "response",
-                "I'm at capacity right now — mention me again in a few minutes.",
+                "I'm at capacity right now — reply again in a few minutes and I'll pick it up.",
             )
             return {"handled": False, "reason": "at_capacity"}
 
@@ -124,10 +133,13 @@ class AgentSessionHandler:
         t.start()
         return stop
 
-    def run_session(self, session, prompt, idempotency_key=None):
+    def run_session(self, session, prompt, idempotency_key=None, payload=None):
+        adapter = self.adapter
+        if self.adapter_for is not None and payload is not None:
+            adapter = self.adapter_for(payload)
         stop = self._start_heartbeat(session)
         try:
-            text = self.adapter.run(
+            text = adapter.run(
                 prompt,
                 progress=lambda msg: log.info("progress: %s", msg),
                 idempotency_key=idempotency_key,

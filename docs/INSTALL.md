@@ -66,6 +66,7 @@ Fill in:
 | `LINEAR_WEBHOOK_SECRET` | the signing secret from step 2.3 |
 | `LINEAR_CLIENT_ID` | from step 1 |
 | `LINEAR_CLIENT_SECRET` | from step 1 |
+| `LINEAR_REDIRECT_URI` | the **exact** callback URL registered in step 1; it is sent in the authorize request and the token exchange, and a mismatch gives `redirect_uri` |
 | `HERMES_GATEWAY_URL` | `http://127.0.0.1:8642` — wherever your Hermes API server listens |
 | `HERMES_GATEWAY_TOKEN` | the Hermes `API_SERVER_KEY` — ask @hermes to inject it at deploy, do not paste it in chat |
 | `HEARTBEAT_SECONDS` | optional, default `45`: emit an interim "still working" thought on long runs; `0` disables |
@@ -112,9 +113,12 @@ five minutes before expiry.
 ## 5. Verify
 
 ```bash
-make test          # 62 tests, no network, no secrets
-make dev           # service on http://127.0.0.1:8650/healthz
+make test          # no network, no secrets
+make dev           # loads .env (mode 0600), serves http://127.0.0.1:8650/healthz
 ```
+
+`make dev` reads `.env` from the repo root, so the credentials written in step 3 are the
+credentials the service sees — no exporting by hand.
 
 Then, in Linear:
 

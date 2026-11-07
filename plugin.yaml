@@ -1,7 +1,7 @@
 name: linear-agent
 label: Linear Agent
-kind: tool
-version: 1.0.0
+kind: standalone
+version: 1.1.0
 author: realpetru
 homepage: https://github.com/realpetru/hermes-linear-agent
 description: >
@@ -15,6 +15,28 @@ requires_hermes: ">=0.22.0"
 provides_tools:
   - linear_agent_status
   - linear_agent_authorize_url
+capabilities:
+  tools:
+    - linear_agent_status
+    - linear_agent_authorize_url
+  hooks: []
+  middleware: []
+  env:
+    - LINEAR_CLIENT_ID
+    - LINEAR_CLIENT_SECRET
+    - LINEAR_WEBHOOK_SECRET
+    - LINEAR_AGENT_PROFILE
+    - LINEAR_AGENT_ROUTING
+    - LINEAR_AGENT_PUBLIC_URL
+    - LINEAR_REDIRECT_URI
+    - LINEAR_API_KEY
+    - HERMES_GATEWAY_TOKEN
+  network: true
+  notes: >
+    Starts an HTTP listener only when the operator runs `hermes linear-agent serve`.
+    Posts to the Linear GraphQL API and to the local Hermes gateway; makes no other
+    outbound calls. Manages its own Linear OAuth tokens (no Hermes-managed oauth:
+    block), stored in a 0600 file whose path is LINEAR_TOKEN_PATH.
 provides_hooks: []
 requires_env:
   - name: LINEAR_CLIENT_ID
@@ -38,11 +60,36 @@ optional_env:
     description: "Public HTTPS base URL Linear posts webhooks to (required for a real install)"
     prompt: "Public HTTPS URL of the bridge"
     password: false
+  - name: LINEAR_AGENT_PROFILE
+    description: "Which Hermes agent answers Linear (a profile name; empty = the gateway's default agent)"
+    prompt: "Agent profile that answers Linear (empty for default)"
+    password: false
+  - name: LINEAR_AGENT_ROUTING
+    description: 'Optional JSON map of label -> profile, e.g. {"cody":"cody"}; a label route beats LINEAR_AGENT_PROFILE'
+    prompt: 'Label routing JSON (optional)'
+    password: false
+  - name: LINEAR_API_KEY
+    description: >
+      Optional personal Linear API key. DEVELOPMENT FALLBACK ONLY: activities posted
+      with it appear under that person's identity, which is the exact problem this
+      plugin exists to fix. Leave empty for a correct install.
+    prompt: "Personal Linear API key (leave empty — identity fallback only)"
+    password: true
   - name: HERMES_GATEWAY_TOKEN
     description: "Hermes API server key the bridge uses to start runs (Bearer token)"
     prompt: "Hermes API server key"
     password: true
 config_schema:
+  agent_profile:
+    type: str
+    default: ""
+    description: "Hermes agent profile that answers Linear. Empty uses the gateway default."
+    required: false
+  routing:
+    type: dict
+    default: {}
+    description: "Optional label -> profile map; beats agent_profile for matching issues."
+    required: false
   bridge_url:
     type: str
     default: "http://127.0.0.1:8650"

@@ -63,11 +63,30 @@ class HandlerTests(unittest.TestCase):
         self.assertFalse(second["handled"])
         self.assertEqual(second["reason"], "duplicate_delivery")
 
-    def test_duplicate_session_different_delivery_is_dropped(self):
+    def test_follow_up_prompt_in_same_session_runs(self):
+        """The advertised interaction: replying to the agent continues the session."""
         h = self.build()
-        self.assertTrue(h.handle(PAYLOAD, {"Linear-Delivery": "d1"})["handled"])
-        self.assertEqual(h.handle(PAYLOAD, {"Linear-Delivery": "d2"})["reason"],
-                         "duplicate_session")
+        first = h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
+        self.assertTrue(first["handled"])
+        self.store.release_slot(first["session"])
+        follow_up = h.handle(dict(PAYLOAD, action="prompted"), {"Linear-Delivery": "d2"})
+        self.assertTrue(follow_up["handled"], "a new delivery in the same session must run")
+
+    def test_retry_of_same_delivery_is_dropped(self):
+        h = self.build()
+        first = h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
+        self.store.release_slot(first["session"])
+        again = h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
+        self.assertEqual(again["reason"], "duplicate_delivery")
+
+    def test_capacity_refusal_does_not_burn_the_delivery(self):
+        """At-capacity tells the user to retry; that retry must not be a duplicate."""
+        other = DeliveryStore(os.path.join(self.tmp, "cap.db"), max_concurrency=1)
+        other.try_acquire_slot("busy")
+        h = self.build(store=other)
+        self.assertEqual(h.handle(PAYLOAD, {"Linear-Delivery": "d9"})["reason"], "at_capacity")
+        other.release_slot("busy")
+        self.assertTrue(h.handle(PAYLOAD, {"Linear-Delivery": "d9"})["handled"])
 
     def test_non_agent_event_ignored(self):
         h = self.build()
@@ -133,6 +152,20 @@ class HandlerTests(unittest.TestCase):
         info = h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
         h.run_session(info["session"], "do it")
         self.assertEqual([a[1] for a in self.linear.activities].count("thought"), 1)
+
+    def test_adapter_for_routes_by_payload(self):
+        default = FakeAdapter("default answer")
+        special = FakeAdapter("special answer")
+        linear = FakeLinear()
+        h = AgentSessionHandler(
+            linear, default, self.store,
+            adapter_for=lambda payload: special if "issue" in (payload.get("agentSession") or {}) else default,
+        )
+        info = h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
+        h.run_session(info["session"], "p", payload=dict(PAYLOAD, agentSession={"id": "sess-1", "issue": {}}))
+        self.assertEqual(special.calls, 1)
+        self.assertEqual(default.calls, 0)
+        self.assertEqual(linear.activities[-1][2], "special answer")
 
     def test_prompt_prefers_linear_prompt_context(self):
         h = self.build()

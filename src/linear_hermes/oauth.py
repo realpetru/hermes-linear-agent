@@ -22,6 +22,38 @@ TOKEN_URL = "https://api.linear.app/oauth/token"
 REQUIRED_SCOPES = ["read", "write", "app:assignable", "app:mentionable"]
 
 
+STATE_MAX_AGE = 900  # 15 minutes to finish an install
+
+
+def make_state(secret, now=None):
+    """Stateless, signed CSRF state so the CLI and the server agree without shared memory."""
+    import hashlib
+    import hmac as _hmac
+
+    stamp = int(now if now is not None else time.time())
+    sig = _hmac.new(str(secret).encode(), str(stamp).encode(), hashlib.sha256).hexdigest()[:32]
+    return "%d.%s" % (stamp, sig)
+
+
+def verify_state(secret, state, max_age=STATE_MAX_AGE, now=None):
+    """True when the state was minted by us and is still fresh."""
+    import hashlib
+    import hmac as _hmac
+
+    if not state or "." not in state or not secret:
+        return False
+    stamp_text, _, sig = state.partition(".")
+    try:
+        stamp = int(stamp_text)
+    except ValueError:
+        return False
+    expected = _hmac.new(str(secret).encode(), stamp_text.encode(), hashlib.sha256).hexdigest()[:32]
+    if not _hmac.compare_digest(expected, sig):
+        return False
+    current = now if now is not None else time.time()
+    return abs(current - stamp) <= max_age
+
+
 class OAuthError(RuntimeError):
     pass
 

@@ -6,7 +6,6 @@ export PYTHONPATH := src
 help:
 	@echo "make dev     - run the webhook service locally (needs .env)"
 	@echo "make test    - run the unit tests (no network, no secrets)"
-	@echo "make demo    - start the service with fake adapters and self-POST a signed event"
 	@echo "make authorize - print the Linear OAuth URL to open as workspace admin"
 	@echo "make exchange  - store the app token: make exchange CODE=<code>"
 	@echo "make docker    - build and run with docker compose"
