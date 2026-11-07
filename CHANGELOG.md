@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.3.1
+
+The install is the release. `docs/INSTALL.md` followed literally could not complete an
+installation: the OAuth helpers read `os.environ` while the guide said to write `.env`,
+and `make authorize` printed a URL with no signed `state`, so the callback answered
+"Install link expired" on the happy path.
+
+- **`make authorize` / `make exchange` load `.env` themselves** and mint the same signed
+  state the callback verifies. `python -m linear_hermes.exchange` does too, so the
+  documented fallback works for a browser that cannot reach the public host.
+- **`authorize` refuses to print a URL it knows cannot work**: no webhook secret (the
+  state is signed with it) or no callback URL is an error with the next step, not a dead
+  link. It also never falls back to the internal bridge address as the OAuth redirect.
+- **`serve` honours `BIND`/`PORT` from `.env`.** The flags now default to `None`; config
+  owns the precedence, so a container port set the documented way is the one that binds.
+- **The app token and dedupe database live at absolute paths** under Hermes' plugin data
+  directory (`~/.hermes/plugin-data/linear-agent/`). A relative path is resolved and
+  warned about, so moving the service no longer silently loses the app token.
+- **`hermes linear-agent doctor`** (new): checks the three credentials, the app token
+  against Linear, the bridge, the public `/healthz`, a signed test delivery, and the
+  Hermes gateway. Prints one line each, exits non-zero on failure, `--json` for scripts,
+  never prints a secret value.
+- **`hermes linear-agent status` now proves something**: credentials, token path, the two
+  URLs to paste into Linear, bridge state, sessions handled, last error — and `--json`.
+- **`serve` without configuration prints the checklist** instead of a `ConfigError`
+  traceback.
+- **Dashboard tab rebuilt** to the design spec: two columns, bridge/env banners, nine
+  profile cards with a filter and a show-all toggle, label rules as rows, a resolution
+  order card, and one action bar. Saves go through a single atomic
+  `POST /api/plugins/linear-agent/settings`; `GET /state` now carries `routing`.
+- **One gateway entry.** The picker rendered a synthetic default card *and* a `default`
+  profile card; it now shows exactly one, labelled "Gateway default", value `""`.
+- **Docs rewritten**: install order starts with the public URL and the Linear app (the
+  installer prompts for values that do not exist yet), includes tunnel commands that
+  warn about rotating hostnames, systemd/launchd/Compose supervision, a symptom → fix
+  table with the signed test delivery, and `after-install.md` so the installer's own
+  message carries the first three steps.
+- **Manifest details**: `secret: true` on the two secrets (Hermes' installer masks on
+  `secret`, not `password`), a `url` hint on the client-id prompt, and truthful
+  `public_url` descriptions — it is not used to register anything with Linear.
+
 ## 1.3.0
 
 - **A real screen for choosing the agent.** `linear-agent` now ships a Hermes dashboard

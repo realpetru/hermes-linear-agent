@@ -4,7 +4,7 @@ import re
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-EXPECTED = "1.3.0"
+EXPECTED = "1.3.1"
 VALID_KINDS = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 REQUIRED_CATALOG_KEYS = ("name", "repo", "sha", "description", "maintainer")
 

@@ -28,11 +28,13 @@ from linear_hermes.plugin_api import bridge_status  # noqa: E402  (path set abov
 from linear_hermes.profiles import ProfileError, available_profiles, validate_profile  # noqa: E402
 from linear_hermes.settings import (  # noqa: E402
     env_shadows_profile,
+    read_settings,
     set_stored_profile,
     set_stored_routing,
     settings_path,
     stored_profile,
     stored_routing,
+    write_settings,
 )
 
 try:  # the host dashboard ships FastAPI; the standalone bridge and tests may not
@@ -106,6 +108,82 @@ def apply_routing(mapping) -> dict:
     return build_state()
 
 
+class SettingsConflict(ValueError):
+    """Raised when an env var would shadow the write, so saving would be a lie."""
+
+
+MAX_ROUTING_ENTRIES = 50
+MAX_LABEL_LENGTH = 50
+
+
+def normalise_routing(mapping) -> dict:
+    """Validate a routing map. Raises ValueError with a message the page can show."""
+    if mapping is None:
+        return {}
+    if not isinstance(mapping, dict):
+        raise ValueError("routing must be an object of label -> profile")
+    if len(mapping) > MAX_ROUTING_ENTRIES:
+        raise ValueError("too many label rules (max %d)" % MAX_ROUTING_ENTRIES)
+    clean = {}
+    for raw_label, raw_profile in mapping.items():
+        if not isinstance(raw_label, str) or not isinstance(raw_profile, str):
+            raise ValueError('routing entries must be text: {"label": "profile"}')
+        label = raw_label.strip().lower()
+        if not label:
+            raise ValueError("routing entries need a label")
+        if len(label) > MAX_LABEL_LENGTH:
+            raise ValueError("keep label names under %d characters" % MAX_LABEL_LENGTH)
+        if label in clean:
+            raise ValueError('\u201c%s\u201d is already routed.' % label)
+        if not raw_profile.strip():
+            raise ValueError("routing entries need a profile — the agent that label should go to")
+        try:
+            clean[label] = validate_profile(raw_profile)
+        except ProfileError as exc:
+            raise ValueError(str(exc)) from exc
+    return clean
+
+
+def apply_settings(payload) -> dict:
+    """Write agent_profile and routing in ONE operation, so a save is never half-true."""
+    if not isinstance(payload, dict):
+        raise ValueError('send {"agent_profile": "<name>", "routing": {"label": "profile"}}')
+    has_agent = "agent_profile" in payload
+    has_routing = "routing" in payload
+    if not (has_agent or has_routing):
+        raise ValueError('send at least one of "agent_profile" or "routing"')
+
+    if has_agent and env_shadows_profile():
+        raise SettingsConflict(
+            "LINEAR_AGENT_PROFILE is set by the deployment and takes precedence over "
+            "anything saved here."
+        )
+    if has_routing and routing_from_env():
+        raise SettingsConflict(
+            "LINEAR_AGENT_ROUTING is set by the deployment. Rules saved here are "
+            "ignored until it is removed."
+        )
+
+    profile = None
+    if has_agent:
+        try:
+            profile = validate_profile(payload.get("agent_profile") or "")
+        except ProfileError as exc:
+            raise ValueError(str(exc)) from exc
+    routing = normalise_routing(payload.get("routing")) if has_routing else None
+
+    values = read_settings()
+    if profile is not None:
+        values["agent_profile"] = profile
+    if routing is not None:
+        values["routing"] = routing
+    try:
+        write_settings(values)
+    except OSError as exc:
+        raise ValueError("could not write %s: %s" % (settings_path(), exc.strerror or exc)) from exc
+    return build_state()
+
+
 def bridge_url() -> str:
     return (
         os.environ.get("LINEAR_AGENT_BRIDGE_URL") or "http://127.0.0.1:8650"
@@ -136,6 +214,7 @@ def build_state(url: str | None = None) -> dict:
         "env_override": env_shadows_profile(),
         "routing": effective_routing(),
         "routing_from_env": routing_from_env(),
+        "env_routing": routing_from_env(),
     }
 
 
@@ -165,6 +244,15 @@ if router is not None:  # pragma: no cover - exercised through the HTTP tests
     @router.get("/state")
     def get_state() -> dict:
         return build_state()
+
+    @router.post("/settings")
+    def set_settings(payload: dict | None = None) -> dict:
+        try:
+            return apply_settings(payload or {})
+        except SettingsConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/routing")
     def set_routing(payload: dict | None = None) -> dict:

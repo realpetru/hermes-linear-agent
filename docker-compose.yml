@@ -11,6 +11,10 @@ services:
       STATE_DB: /data/state.sqlite3
     volumes:
       - ./data:/data
+    # `127.0.0.1` inside a container is the container. These two lines let the
+    # bridge reach a Hermes API server on the host as host.docker.internal:8642.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # If your tunnel/reverse proxy runs on a different machine than this
       # container, a 127.0.0.1 bind is unreachable from it. Publish on the LAN and

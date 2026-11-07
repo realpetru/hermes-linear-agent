@@ -23,31 +23,87 @@ and a Hermes run behind it.
                           Linear thread shows: thought → progress → answer
 ```
 
-## 60-second quickstart
+## Install
+
+About 15 minutes, most of it in Linear's UI. You need **workspace admin** in Linear, a
+**public HTTPS URL** that reaches this machine, and a machine that stays on. The short
+version is below; [docs/INSTALL.md](docs/INSTALL.md) has the click-by-click, the Docker
+path, and the systemd/launchd units.
+
+### 1. Get a public URL
+
+Linear will not POST to `localhost`. For a first install, a quick tunnel is enough:
+
+```bash
+# terminal 1 — leave running for the whole install
+cloudflared tunnel --url http://127.0.0.1:8650
+# => https://calm-fox-1234.trycloudflare.com
+```
+
+That hostname is your `LINEAR_AGENT_PUBLIC_URL`. **A quick tunnel gets a new hostname
+every restart**, which breaks the two URLs you paste into Linear; for anything past
+testing use a named tunnel (Cloudflare, ngrok reserved domain) or a VPS with Caddy.
+See [INSTALL §0](docs/INSTALL.md#0-a-public-https-url).
+
+### 2. Create the Linear OAuth app
+
+As a workspace admin: **Settings → API → Applications → New application**
+(<https://linear.app/settings/api/applications/new>).
+
+- **Name:** what you want people to @mention (`Hermes`). It is the agent's display name.
+- **Callback URL:** `https://YOUR-PUBLIC-HOST/oauth/callback`
+- Enable **Webhooks**, URL `https://YOUR-PUBLIC-HOST/webhook`, and tick
+  **Agent session events**.
+- Copy the three values: **client ID**, **client secret**, **webhook signing secret**.
+
+Do not close the page; the next step asks for them.
+
+### 3. Install the plugin
 
 ```bash
 hermes plugins install realpetru/hermes-linear-agent
 hermes plugins enable linear-agent
-
-hermes linear-agent authorize     # prints the OAuth URL — open as workspace admin
-hermes linear-agent serve         # start the bridge (one process, stdlib only)
-hermes linear-agent status        # reachability, counters, missing config, active agent
-hermes linear-agent agent list    # which agent answers Linear, and what else exists
 ```
 
-Then assign any issue to the agent in Linear. You should see a `thought` within ten
-seconds and the answer posted by **Hermes**, not by you.
+The installer prompts for the three values from step 2 and stores them in Hermes. If you
+skip a prompt, add it to `$(hermes config env-path)` later — that is the only credential
+store this path uses.
 
-Requires Python 3.9+ and nothing else: the bridge has **zero third-party
-dependencies**. Point it at a public HTTPS URL with `LINEAR_AGENT_PUBLIC_URL`
-(a tunnel is fine — Linear refuses localhost and private hosts).
+### 4. Run the bridge, then install the app
+
+```bash
+hermes linear-agent serve        # terminal 2 — leave running
+hermes linear-agent authorize    # terminal 3 — open the URL as a workspace admin
+```
+
+Approve the install and you should land on **"Hermes installed"**. The app token is
+stored `0600` and refreshes automatically.
+
+### 5. Prove it before you touch an issue
+
+```bash
+hermes linear-agent doctor
+```
+
+Every line must say `ok`: the three credentials, the app token against Linear, the
+public URL from the outside, the webhook signature, and the Hermes gateway. Only then:
+
+### 6. Assign an issue
+
+Assign any issue to **Hermes** — the *delegate* field, not the assignee — or @mention it.
+A `thought` appears within ten seconds; the answer arrives as a `response` posted by
+Hermes, not by you.
+
+> A foreground `serve` dies with your terminal. Before you rely on this, install it as a
+> service: [INSTALL §6](docs/INSTALL.md#6-keep-it-running).
 
 ## What you get
 
 | Surface | What it does |
 |---|---|
 | `hermes linear-agent serve` | runs the webhook bridge |
-| `hermes linear-agent status` | reachability, sessions handled, last error, missing env |
+| `hermes linear-agent status` | reachability, credentials, app token, the two URLs, sessions handled, last error |
+| `hermes linear-agent doctor` | every check in one command; exits non-zero if the install is broken |
 | `hermes linear-agent authorize` | builds the `actor=app` install URL |
 | `linear_agent_status` tool | the same status, for the agent itself to check mid-conversation |
 | `linear_agent_authorize_url` tool | the install URL, so the agent can hand it to a user |
@@ -195,24 +251,29 @@ If your tunnel runs on a **different machine** from the container, do not bind
 loopback: publish the port on the LAN and let the firewall be the boundary, or the
 public URL returns nothing.
 
-## What breaks if Linear changes their agent API
+## When nothing happens
+
+| What you see | Do this |
+|---|---|
+| `serve` prints `linear-agent is not configured yet` | add the three credentials to `$(hermes config env-path)` (or re-run `plugins install --force`) |
+| Linear shows nothing and the log has no `POST /webhook` | Linear cannot reach you: check `$LINEAR_AGENT_PUBLIC_URL/healthz` from outside, and the webhook URL in the app |
+| Log: `rejected webhook: bad signature` | the webhook secret is not this webhook's secret — copy it again, then `hermes linear-agent doctor` |
+| Log: `event ignored: not_agent_session` | tick **Agent session events**, and delegate the issue instead of assigning it |
+| `gateway /v1/runs -> HTTP 401` | `HERMES_GATEWAY_TOKEN` must equal `API_SERVER_KEY` |
+| `Connection refused … :8642` | enable the Hermes API server, or set `host.docker.internal` in Docker |
+| Activities appear under your name | `LINEAR_API_KEY` is set and there is no app token — remove it and authorize |
+
+`hermes linear-agent doctor` automates every check above. The full table, with the
+signed test delivery, is in [docs/INSTALL.md §7](docs/INSTALL.md#7-when-nothing-happens).
+
+### For contributors: where the code lives
 
 | Symptom | File |
 |---|---|
-| activities rejected as invalid | `src/linear_hermes/linear.py` (`content.type` rules) |
-| nothing spawns on mention | `src/linear_hermes/handler.py` (`should_handle`) |
-| every webhook 401s | `src/linear_hermes/signature.py` |
-| runs start but never report | `src/linear_hermes/adapters.py` (`/v1/runs`) |
-
-Schema reference:
-`https://raw.githubusercontent.com/linear/linear/refs/heads/master/packages/sdk/src/schema.graphql`
-
-Two known sharp edges, documented so nobody chases them:
-
-- `AgentActivity { type }` fails GraphQL validation. The kind lives in the activity
-  **content**, not as a queryable field.
-- Activity types are five: `thought`, `action`, `response`, `elicitation`, `error`.
-  `prompt` is user-generated only; an agent cannot send it.
+| activities rejected as invalid | `linear.py` |
+| nothing spawns on mention | `handler.py` |
+| every webhook 401s | `signature.py` |
+| runs fail to start | `adapters.py` |
 
 ## Tests
 

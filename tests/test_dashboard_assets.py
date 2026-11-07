@@ -46,10 +46,11 @@ class SdkContractTests(unittest.TestCase):
     def test_uses_fetchjson(self):
         self.assertIn("SDK.fetchJSON", self.js)
 
-    def test_uses_the_sdk_toast_pair(self):
-        self.assertIn("hooks.useToast", self.js)
-        self.assertIn("showToast(", self.js)
-        self.assertIn("toast: toastState.toast", self.js)
+    def test_save_state_lives_in_the_action_bar_not_a_toast(self):
+        self.assertNotIn("hooks.useToast", self.js)
+        self.assertNotIn("components.Toast", self.js)
+        self.assertIn('role: "status"', self.js)
+        self.assertIn('"aria-live": "polite"', self.js)
 
     def test_uses_sdk_cn(self):
         self.assertIn("utils.cn", self.js)
@@ -90,6 +91,14 @@ class AssetsTests(unittest.TestCase):
     def test_calls_only_its_own_api_prefix(self):
         self.assertIn('"/api/plugins/linear-agent"', self.js)
 
+    def test_saves_through_the_atomic_endpoint(self):
+        self.assertIn('API + "/settings"', self.js)
+        self.assertNotIn('API + "/agent"', self.js, "two endpoints means a half-saved page")
+
+    def test_renders_exactly_one_gateway_entry(self):
+        self.assertIn('label: "Gateway default"', self.js)
+        self.assertIn('!== "default"', self.js, "the real default profile must not duplicate it")
+
     def test_degrades_when_components_are_missing(self):
         for name in ("Card", "CardContent", "Button", "Input"):
             self.assertIn("C.%s ||" % name, self.js)
@@ -115,10 +124,11 @@ class AssetsTests(unittest.TestCase):
     def test_status_colours_are_semantic(self):
         self.assertIn("var(--success", self.css)
         self.assertIn("var(--warning", self.css)
-        self.assertIn("var(--accent, currentColor)", self.css)
+        self.assertIn("var(--destructive", self.css)
+        self.assertIn("var(--primary", self.css)
 
     def test_hardcoded_colours_are_only_status_fallbacks(self):
-        allowed = ("#fff", "#111", "#16a34a", "#d97706", "#b45309", "#2563eb")
+        allowed = ("#fff", "#111", "#2c7a5b", "#9a5f10", "#ad382a", "#0d5b52")
         for value in re.findall(r"(?<!var\()#[0-9a-fA-F]{3,6}", self.css):
             self.assertIn(value, allowed, "hardcoded colour %s" % value)
 

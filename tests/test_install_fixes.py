@@ -1,0 +1,151 @@
+"""Install-path correctness: config precedence, absolute paths, exchange, authorize."""
+import os
+import pathlib
+import tempfile
+import unittest
+
+from linear_hermes.config import ConfigError, load_config
+
+BASE = {"LINEAR_WEBHOOK_SECRET": "s3cret"}
+
+
+def env(**overrides):
+    values = dict(BASE)
+    values.update(overrides)
+    return values
+
+
+class HomeTestCase(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self._home = os.environ.get("HERMES_HOME")
+        self._cwd = os.getcwd()
+        os.environ["HERMES_HOME"] = self.home
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = self._home
+        os.chdir(self._cwd)
+
+
+class BindPortTests(HomeTestCase):
+    def test_env_bind_and_port_are_honoured(self):
+        cfg = load_config(env=env(BIND="0.0.0.0", PORT="8651"))
+        self.assertEqual(cfg.bind, "0.0.0.0")
+        self.assertEqual(cfg.port, 8651)
+
+    def test_defaults_when_unset(self):
+        cfg = load_config(env=env())
+        self.assertEqual(cfg.bind, "127.0.0.1")
+        self.assertEqual(cfg.port, 8650)
+
+    def test_serve_defaults_do_not_override_env(self):
+        """The CLI must not force BIND/PORT into os.environ (that beat .env)."""
+        source = (pathlib.Path(__file__).resolve().parents[1] / "src/linear_hermes/plugin_api.py").read_text()
+        self.assertIn('serve.add_argument("--bind", default=None', source)
+        self.assertIn('serve.add_argument("--port", type=int, default=None', source)
+        self.assertNotIn('os.environ.setdefault("BIND"', source, "a forced default beats .env")
+        # the only writes must sit inside "the user actually passed the flag" guards
+        self.assertIn('if getattr(args, "bind", None):', source)
+        self.assertIn('if getattr(args, "port", None):', source)
+
+
+class DataPathTests(HomeTestCase):
+    def test_token_path_default_is_absolute(self):
+        cfg = load_config(env=env())
+        self.assertTrue(os.path.isabs(cfg.linear_token_path))
+        self.assertTrue(cfg.linear_token_path.endswith("linear-tokens.json"))
+        self.assertIn("plugin-data", cfg.linear_token_path)
+
+    def test_state_db_lives_beside_the_token(self):
+        cfg = load_config(env=env())
+        self.assertEqual(os.path.dirname(cfg.db_path), os.path.dirname(cfg.linear_token_path))
+        self.assertNotIn("hermes-linear-agent", cfg.db_path, "the old /tmp default is gone")
+
+    def test_relative_token_path_is_made_absolute(self):
+        cfg = load_config(env=env(LINEAR_TOKEN_PATH="data/linear-tokens.json"))
+        self.assertTrue(os.path.isabs(cfg.linear_token_path))
+        self.assertTrue(cfg.linear_token_path.endswith(os.path.join("data", "linear-tokens.json")))
+
+    def test_moving_cwd_keeps_the_token_visible(self):
+        first = load_config(env=env()).linear_token_path
+        os.chdir(tempfile.mkdtemp())
+        second = load_config(env=env()).linear_token_path
+        self.assertEqual(first, second)
+
+
+class UrlTests(HomeTestCase):
+    def test_redirect_derives_from_public_url(self):
+        cfg = load_config(env=env(LINEAR_AGENT_PUBLIC_URL="https://host.example/"))
+        self.assertEqual(cfg.public_url, "https://host.example")
+        self.assertEqual(cfg.redirect_uri, "https://host.example/oauth/callback")
+
+    def test_explicit_redirect_wins(self):
+        cfg = load_config(env=env(
+            LINEAR_AGENT_PUBLIC_URL="https://host.example",
+            LINEAR_REDIRECT_URI="http://localhost:8650/oauth/callback",
+        ))
+        self.assertEqual(cfg.redirect_uri, "http://localhost:8650/oauth/callback")
+
+    def test_no_fallback_to_the_internal_bridge_url(self):
+        cfg = load_config(env=env())
+        self.assertEqual(cfg.redirect_uri, "", "an internal address is not a Linear callback")
+
+
+class ExchangeEnvTests(HomeTestCase):
+    def test_exchange_reads_the_repo_dotenv(self):
+        """The documented fallback must load .env, not only os.environ."""
+        work = tempfile.mkdtemp()
+        pathlib.Path(work, ".env").write_text(
+            "LINEAR_CLIENT_ID=cid-from-dotenv\n"
+            "LINEAR_CLIENT_SECRET=csec\n"
+            "LINEAR_AGENT_PUBLIC_URL=https://host.example\n"
+        )
+        os.chdir(work)
+        for key in ("LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET", "LINEAR_AGENT_PUBLIC_URL", "LINEAR_REDIRECT_URI"):
+            os.environ.pop(key, None)
+
+        import linear_hermes.exchange as exchange
+
+        calls = {}
+
+        def fake_exchange(client_id, client_secret, code, redirect_uri, transport):
+            calls.update(client_id=client_id, client_secret=client_secret, code=code, redirect=redirect_uri)
+            return {"access_token": "tok", "refresh_token": "ref", "expires_at": "2030-01-01T00:00:00+00:00"}
+
+        original = exchange.exchange_code
+        exchange.exchange_code = fake_exchange
+        try:
+            code = exchange.main(["https://host.example/oauth/callback?code=abc123"])
+        finally:
+            exchange.exchange_code = original
+
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["client_id"], "cid-from-dotenv")
+        self.assertEqual(calls["code"], "abc123")
+        self.assertEqual(calls["redirect"], "https://host.example/oauth/callback")
+
+
+class AuthorizeGuardTests(HomeTestCase):
+    def test_authorize_refuses_without_the_webhook_secret(self):
+        from linear_hermes import plugin_api
+
+        original = plugin_api.read_setting
+        plugin_api.read_setting = lambda name, default=None, env=None: (
+            "cid" if name == "LINEAR_CLIENT_ID" else (default if default is not None else "")
+        )
+        try:
+            doc = plugin_api.tool_authorize_url()
+        finally:
+            plugin_api.read_setting = original
+        import json
+
+        payload = json.loads(doc)
+        self.assertFalse(payload["ok"])
+        self.assertIn("LINEAR_WEBHOOK_SECRET", payload["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

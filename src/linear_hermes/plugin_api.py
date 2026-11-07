@@ -67,8 +67,9 @@ def _bridge_url(ctx=None):
     return DEFAULT_BRIDGE
 
 
-def bridge_status(url, timeout=3.0):
+def bridge_status(url=None, timeout=3.0):
     """Probe the bridge. Returns a dict that is always JSON-serialisable."""
+    url = url or os.environ.get("LINEAR_AGENT_BRIDGE_URL") or DEFAULT_BRIDGE
     try:
         request = urllib.request.Request(url.rstrip("/") + "/status")
         token = (os.environ.get("STATUS_TOKEN") or "").strip()
@@ -140,14 +141,34 @@ def tool_authorize_url(ctx=None, state="", **_kwargs):
             "error": "LINEAR_CLIENT_ID is not set",
             "next_step": "Create the OAuth app in Linear, then set LINEAR_CLIENT_ID.",
         }, indent=2)
+    # The state is signed with the webhook secret and the callback refuses without it,
+    # so printing a URL when the secret is missing hands out an unredeemable link.
+    webhook_secret = str(read_setting("LINEAR_WEBHOOK_SECRET", "") or "")
+    if not webhook_secret:
+        return json.dumps({
+            "ok": False,
+            "error": "LINEAR_WEBHOOK_SECRET is not set",
+            "why": "the install link is signed with it, so the callback would reject any "
+                   "link printed now (\"Install link expired\")",
+            "next_step": "Create the Linear app's webhook (docs/INSTALL.md step 2), then re-run.",
+        }, indent=2)
     # LINEAR_REDIRECT_URI is what the token exchange sends, so it must be what the
     # authorize request asks for; otherwise installs die with redirect_uri mismatch.
-    public = os.environ.get("LINEAR_AGENT_PUBLIC_URL", "").rstrip("/")
-    redirect = os.environ.get("LINEAR_REDIRECT_URI") or ((public or _bridge_url(ctx)) + "/oauth/callback")
+    # There is deliberately no fall-back to the internal bridge URL: Linear has never
+    # heard of that address, and it is 404-shaped rather than obviously wrong.
+    urls = _urls(ctx)
+    redirect = urls["redirect_uri"]
+    if not redirect:
+        return json.dumps({
+            "ok": False,
+            "error": "no OAuth callback URL is configured",
+            "next_step": "Set LINEAR_AGENT_PUBLIC_URL (e.g. https://your-host.example) or "
+                         "LINEAR_REDIRECT_URI, then re-run.",
+        }, indent=2)
     from .oauth import authorize_url, make_state
 
     if not state:
-        state = make_state(read_setting("LINEAR_WEBHOOK_SECRET", ""))
+        state = make_state(webhook_secret)
     url = authorize_url(client_id, redirect, state=state)
     return json.dumps({
         "ok": True,
@@ -159,13 +180,270 @@ def tool_authorize_url(ctx=None, state="", **_kwargs):
     }, indent=2)
 
 
+CREDENTIALS = ("LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET", "LINEAR_WEBHOOK_SECRET")
+
+
+def _version():
+    """The plugin's own manifest version — the one place it cannot drift from."""
+    try:
+        import re
+        from pathlib import Path
+
+        manifest = Path(__file__).resolve().parents[2] / "plugin.yaml"
+        match = re.search(r"^version:\s*(\S+)", manifest.read_text(encoding="utf-8"), re.M)
+        return match.group(1) if match else "unknown"
+    except Exception:  # noqa: BLE001 - never let a version lookup break a command
+        return "unknown"
+
+
+def _present(name):
+    return bool(str(read_setting(name, "") or "").strip())
+
+
+def _env_view():
+    """The repo .env the docs mention, overlaid by the real environment."""
+    from .config import default_env_file, load_dotenv
+
+    env = dict(load_dotenv(default_env_file()))
+    env.update(os.environ)
+    return env
+
+
+def _urls(ctx=None):
+    """The two URLs a user must paste into the Linear app, as the code sees them."""
+    env = _env_view()
+    public = (env.get("LINEAR_AGENT_PUBLIC_URL") or read_setting("LINEAR_AGENT_PUBLIC_URL", "") or "").rstrip("/")
+    redirect = (env.get("LINEAR_REDIRECT_URI") or read_setting("LINEAR_REDIRECT_URI", "") or "") or (
+        (public + "/oauth/callback") if public else ""
+    )
+    return {
+        "public_url": public,
+        "webhook_url": (public + "/webhook") if public else "",
+        "redirect_uri": redirect,
+    }
+
+
+def _token_state():
+    """(path, record) for the app token, without ever printing its value."""
+    from .config import default_data_dir
+    from .oauth import load_tokens
+
+    path = os.environ.get("LINEAR_TOKEN_PATH") or os.path.join(default_data_dir(), "linear-tokens.json")
+    try:
+        record = load_tokens(path)
+    except Exception:  # noqa: BLE001 - a corrupt file is a finding, not a crash
+        record = None
+    return path, record
+
+
+def _token_facts():
+    path, record = _token_state()
+    facts = {"path": path, "present": bool(record), "mode": "", "expires_at": ""}
+    if record:
+        facts["expires_at"] = str(record.get("expires_at") or "")
+        try:
+            facts["mode"] = oct(os.stat(path).st_mode & 0o777)[2:]
+        except OSError:
+            facts["mode"] = "?"
+    return facts
+
+
+def _active_profile():
+    env = os.environ.get("LINEAR_AGENT_PROFILE") or ""
+    if env.strip():
+        return env.strip().lower()
+    try:
+        from .settings import stored_profile
+
+        return stored_profile()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def status_document(url=None):
+    """Everything needed to answer "is this install working?"."""
+    probe = bridge_status(url)
+    missing = [name for name in CREDENTIALS if not _present(name)]
+    doc = {
+        "service": "linear-agent",
+        "version": _version(),
+        "status": "degraded" if missing else "ok",
+        "bridge": probe,
+        "credentials": {name: ("set" if _present(name) else "MISSING") for name in CREDENTIALS},
+        "missing": missing,
+        "agent_profile": _active_profile(),
+        "urls": _urls(),
+        "token": _token_facts(),
+        "settings_path": _settings_path_public(),
+    }
+    if probe.get("reachable"):
+        for key in ("sessions_handled", "last_error", "agent_profile"):
+            if probe.get(key) not in (None, "", "(gateway default)"):
+                doc[key] = probe[key]
+    return doc
+
+
+def _settings_path_public():
+    try:
+        from .settings import settings_path
+
+        return settings_path()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _probe(url, timeout=5, headers=None, data=None, method=None):
+    """Small injectable HTTP helper: tests replace it, doctor uses it."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, data=data, method=method)
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.getcode(), response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:  # a 4xx is a result, not an exception
+        return exc.code, exc.read().decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001 - a network failure is a finding
+        return 0, str(exc)
+
+
+def _linear_viewer(access_token, probe):
+    """Workspace name for this app token, an error string, or None when unknown."""
+    from .linear import API_URL
+
+    body = json.dumps({"query": "query Me { viewer { organization { name } } }"}).encode("utf-8")
+    status, text = probe(
+        API_URL,
+        10,
+        headers={"Content-Type": "application/json", "Authorization": access_token},
+        data=body,
+        method="POST",
+    )
+    if status == 200:
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return "Linear answered non-JSON; the token is probably valid but unverified"
+        viewer = (payload.get("data") or {}).get("viewer") or {}
+        name = (viewer.get("organization") or {}).get("name")
+        return True if name else "token works but this app is not installed in a workspace"
+    if status in (401, 403):
+        return "token rejected by Linear (HTTP %s) — re-run: hermes linear-agent authorize" % status
+    return None
+
+
+def doctor(timeout=5, probe=None):
+    """One command that proves the install. Returns (checks, ok)."""
+    probe = probe or _probe
+    from .signature import compute_signature
+
+    checks = []
+    secrets = {name: str(read_setting(name, "") or "") for name in CREDENTIALS}
+    missing = [name for name in CREDENTIALS if not secrets[name].strip()]
+    urls = _urls()
+    if missing:
+        checks.append(("config", False, "missing: %s" % ", ".join(missing)))
+    elif not urls["public_url"]:
+        checks.append(("config", False, "LINEAR_AGENT_PUBLIC_URL is not set — Linear cannot reach this"))
+    else:
+        checks.append(("config", True, "LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET, LINEAR_WEBHOOK_SECRET set"))
+
+    path, record = _token_state()
+    if not record:
+        checks.append(("token", False, "no app token at %s — run: hermes linear-agent authorize" % path))
+    else:
+        verdict = _linear_viewer(str(record.get("access_token") or ""), probe)
+        if verdict is True:
+            mode = _token_facts()["mode"]
+            suffix = "" if mode in ("600", "") else " (mode %s — should be 600)" % mode
+            checks.append(("token", True, "app token valid, refreshes automatically%s" % suffix))
+        elif verdict is None:
+            checks.append(("token", True, "app token present at %s (Linear not reachable to verify)" % path))
+        else:
+            checks.append(("token", False, verdict))
+
+    bridge = bridge_status(None)
+    if bridge.get("reachable"):
+        checks.append(("bridge", True, bridge.get("url", "")))
+    else:
+        checks.append((
+            "bridge",
+            False,
+            "not reachable — is `hermes linear-agent serve` running? (%s)" % (bridge.get("error") or "connection refused"),
+        ))
+
+    if not urls["public_url"]:
+        checks.append(("public", False, "no public URL configured"))
+    else:
+        status, _body = probe(urls["public_url"] + "/healthz", timeout)
+        if status == 200:
+            checks.append(("public", True, urls["public_url"] + "/healthz"))
+        else:
+            checks.append((
+                "public",
+                False,
+                "%s/healthz answered %s — Linear cannot reach this" % (urls["public_url"], status or "nothing"),
+            ))
+
+    if urls["webhook_url"] and secrets["LINEAR_WEBHOOK_SECRET"]:
+        body = b'{"action":"created","type":"AgentSessionEvent","webhookTimestamp":0}'
+        signature = compute_signature(secrets["LINEAR_WEBHOOK_SECRET"], body)
+        status, _body = probe(
+            urls["webhook_url"],
+            timeout,
+            headers={"Content-Type": "application/json", "Linear-Signature": signature},
+            data=body,
+            method="POST",
+        )
+        if status == 200:
+            checks.append(("signature", True, "signed test delivery accepted (200)"))
+        elif status == 401:
+            checks.append(("signature", False, "401 — LINEAR_WEBHOOK_SECRET does not match this webhook"))
+        else:
+            checks.append(("signature", False, "signed delivery answered %s" % (status or "nothing")))
+    else:
+        checks.append(("signature", False, "no public URL or no webhook secret"))
+
+    env = _env_view()
+    gateway = (env.get("HERMES_GATEWAY_URL") or read_setting("HERMES_GATEWAY_URL", "http://127.0.0.1:8642") or "").rstrip("/")
+    gateway_token = env.get("HERMES_GATEWAY_TOKEN") or read_setting("HERMES_GATEWAY_TOKEN", "") or ""
+    if not gateway:
+        checks.append(("gateway", False, "HERMES_GATEWAY_URL is not set"))
+    else:
+        status, _body = probe(
+            gateway + "/v1/models",
+            timeout,
+            headers={"Authorization": "Bearer " + gateway_token} if gateway_token else None,
+        )
+        if status == 200:
+            checks.append(("gateway", True, gateway + "/v1/models"))
+        elif status in (401, 403):
+            checks.append(("gateway", False, "401 — HERMES_GATEWAY_TOKEN is not API_SERVER_KEY"))
+        else:
+            checks.append((
+                "gateway",
+                False,
+                "refused at %s — enable the Hermes API server (API_SERVER_ENABLED=true)" % gateway,
+            ))
+
+    return checks, all(ok for _name, ok, _detail in checks)
+
+
 def _setup_cli(parser):
     sub = parser.add_subparsers(dest="linear_agent_command")
     serve = sub.add_parser("serve", help="Run the Linear agent bridge")
-    serve.add_argument("--bind", default=os.environ.get("BIND", "127.0.0.1"))
-    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8650")))
-    status = sub.add_parser("status", help="Print bridge status as JSON")
-    status.add_argument("--url", default=os.environ.get("LINEAR_AGENT_BRIDGE_URL", DEFAULT_BRIDGE))
+    # Defaults are None so .env decides; a flag only overrides when actually given.
+    serve.add_argument("--bind", default=None, help="interface to bind (default: BIND, else 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=None, help="port (default: PORT, else 8650)")
+    status = sub.add_parser("status", help="Show what this install is doing")
+    status.add_argument("--url", default=None)
+    status.add_argument("--json", action="store_true", help="machine-readable output")
+    doctor_cmd = sub.add_parser("doctor", help="Check every part of the install; exits non-zero on failure")
+    doctor_cmd.add_argument("--json", action="store_true")
+    exchange_cmd = sub.add_parser("exchange", help="Store the app token from a redirect URL or code")
+    exchange_cmd.add_argument("code")
     authorize = sub.add_parser("authorize", help="Print the OAuth install URL")
     authorize.add_argument("--state", default="")
     agent = sub.add_parser("agent", help="Show or change which Hermes agent answers")
@@ -176,15 +454,80 @@ def _setup_cli(parser):
 def _handle_cli(args):
     command = getattr(args, "linear_agent_command", None)
     if command == "serve":
-        os.environ.setdefault("BIND", args.bind)
-        os.environ["PORT"] = str(args.port)
+        # Only write what the user actually asked for: forcing defaults here would
+        # silently override BIND/PORT from .env (config owns the precedence).
+        if getattr(args, "bind", None):
+            os.environ["BIND"] = args.bind
+        if getattr(args, "port", None):
+            os.environ["PORT"] = str(args.port)
+        from .config import ConfigError
         from .__main__ import main as serve_main
 
-        serve_main()
+        try:
+            serve_main()
+        except (ConfigError, SystemExit) as exc:
+            if not isinstance(exc, ConfigError):
+                raise
+            print("linear-agent is not configured yet: %s" % exc)
+            print("")
+            for name in CREDENTIALS:
+                print("  %-22s %s" % (name, "set" if _present(name) else "missing"))
+            print("")
+            print("Create the Linear app (docs/INSTALL.md step 2), then either re-run")
+            print("  hermes plugins install realpetru/hermes-linear-agent --force")
+            print("or add the values to $(hermes config env-path).")
+            return 2
         return 0
     if command == "status":
-        print(json.dumps(bridge_status(args.url), indent=2))
+        doc = status_document(args.url)
+        if getattr(args, "json", False):
+            print(json.dumps(doc, indent=2))
+            return 0
+        print("linear-agent %s — %s" % (doc["version"], doc["status"]))
+        print("  agent      %s" % (doc.get("agent_profile") or "(gateway default)"))
+        bridge = doc["bridge"]
+        if bridge.get("reachable"):
+            print("  bridge     %s" % bridge.get("url", ""))
+        else:
+            print("  bridge     NOT REACHABLE (%s)" % (bridge.get("error") or "connection refused"))
+        for name, state in doc["credentials"].items():
+            print("  %-10s %s" % (name.replace("LINEAR_", "").lower()[:10], state))
+        token = doc["token"]
+        print("  token      %s" % (token["path"] if token["present"] else "none — run: hermes linear-agent authorize"))
+        if doc["urls"]["public_url"]:
+            print("  webhook    %s" % doc["urls"]["webhook_url"])
+            print("  callback   %s" % doc["urls"]["redirect_uri"])
+        else:
+            print("  webhook    (LINEAR_AGENT_PUBLIC_URL not set)")
+        if doc.get("sessions_handled") is not None:
+            print("  sessions   %s handled, last error: %s" % (doc.get("sessions_handled"), doc.get("last_error") or "none"))
+        print("")
+        print("run `hermes linear-agent doctor` to check every part of the install")
         return 0
+    if command == "doctor":
+        checks, ok = doctor()
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "ok": ok,
+                "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in checks],
+            }, indent=2))
+        else:
+            print("linear-agent %s" % _version())
+            print("")
+            for name, passed, detail in checks:
+                print("  %-10s %-4s %s" % (name, "ok" if passed else "FAIL", detail))
+            urls = _urls()
+            if urls["public_url"]:
+                print("")
+                print("  Paste these into the Linear app:")
+                print("    Webhook URL     %s" % urls["webhook_url"])
+                print("    Callback URL    %s" % urls["redirect_uri"])
+                print("    Category        Agent session events")
+        return 0 if ok else 1
+    if command == "exchange":
+        from .exchange import main as exchange_main
+
+        return exchange_main([args.code])
     if command == "authorize":
         print(tool_authorize_url(state=args.state))
         return 0

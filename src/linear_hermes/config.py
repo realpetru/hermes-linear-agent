@@ -1,8 +1,11 @@
 """Environment-driven configuration. Secrets are never logged or echoed."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
 
 
 class ConfigError(RuntimeError):
@@ -38,6 +41,7 @@ class Config:
     linear_client_secret: str = ""
     linear_token_path: str = ""
     redirect_uri: str = ""
+    public_url: str = ""
     heartbeat_seconds: int = 45
     max_skew_seconds: int = 0
     agent_profile: str = ""
@@ -61,6 +65,9 @@ class Config:
             "routing": self.routing or {},
             "linear_client_id": "set" if self.linear_client_id else "MISSING",
             "linear_client_secret": "set" if self.linear_client_secret else "MISSING",
+            "public_url": self.public_url or "MISSING",
+            "redirect_uri": self.redirect_uri or "MISSING",
+            "linear_token_path": self.linear_token_path,
         }
 
 
@@ -113,6 +120,35 @@ def _effective_profile(env):
     return stored_profile()
 
 
+def default_data_dir():
+    """Where the token and the dedupe database live unless told otherwise.
+
+    Deliberately absolute: a relative path is resolved against the process's working
+    directory, so a service started elsewhere loses the app token and silently falls
+    back to posting as a human — the exact bug this project exists to fix.
+    """
+    from .settings import settings_dir
+
+    return settings_dir()
+
+
+def _absolute_data_path(value, name):
+    if not value:
+        return value
+    expanded = os.path.expanduser(str(value))
+    if os.path.isabs(expanded):
+        return expanded
+    resolved = os.path.abspath(expanded)
+    log.warning(
+        "%s is relative (%s); using %s. Set an absolute path so a service started "
+        "from another directory can still find it.",
+        name,
+        value,
+        resolved,
+    )
+    return resolved
+
+
 def _effective_routing(env):
     raw = _env(env, "LINEAR_AGENT_ROUTING", "")
     if raw:
@@ -131,6 +167,20 @@ def load_config(env=None):
             merged = dict(dotenv)
             merged.update({k: v for k, v in os.environ.items() if k in dotenv})
             env = merged
+    public_url = (_env(env, "LINEAR_AGENT_PUBLIC_URL", "") or "").rstrip("/")
+    # A browser-facing callback: an explicit value, else the public host, and NO
+    # fall-back to the internal bridge URL (Linear has never heard of that address).
+    redirect = _env(env, "LINEAR_REDIRECT_URI", "") or (
+        (public_url + "/oauth/callback") if public_url else ""
+    )
+    token_path = _absolute_data_path(
+        _env(env, "LINEAR_TOKEN_PATH", "") or os.path.join(default_data_dir(), "linear-tokens.json"),
+        "LINEAR_TOKEN_PATH",
+    )
+    state_db = _absolute_data_path(
+        _env(env, "STATE_DB", "") or os.path.join(default_data_dir(), "state.sqlite3"),
+        "STATE_DB",
+    )
     cfg = Config(
         webhook_secret=_env(env, "LINEAR_WEBHOOK_SECRET", "") or "",
         linear_api_key=_env(env, "LINEAR_API_KEY", "") or "",
@@ -141,13 +191,14 @@ def load_config(env=None):
         port=int(_env(env, "PORT", "8650")),
         bind=_env(env, "BIND", "127.0.0.1") or "127.0.0.1",
         max_concurrency=int(_env(env, "MAX_CONCURRENCY", "3")),
-        db_path=_env(env, "STATE_DB", "/tmp/hermes-linear-agent/state.sqlite3") or "/tmp/hermes-linear-agent/state.sqlite3",
+        db_path=state_db,
         agent_name=_env(env, "AGENT_DISPLAY_NAME", "Hermes") or "Hermes",
         log_level=(_env(env, "LOG_LEVEL", "INFO") or "INFO").upper(),
         linear_client_id=_env(env, "LINEAR_CLIENT_ID", "") or "",
         linear_client_secret=_env(env, "LINEAR_CLIENT_SECRET", "") or "",
-        linear_token_path=_env(env, "LINEAR_TOKEN_PATH", "data/linear-tokens.json") or "",
-        redirect_uri=_env(env, "LINEAR_REDIRECT_URI", "http://localhost:8650/oauth/callback") or "",
+        linear_token_path=token_path,
+        redirect_uri=redirect,
+        public_url=public_url,
         heartbeat_seconds=int(_env(env, "HEARTBEAT_SECONDS", "45")),
         max_skew_seconds=int(_env(env, "LINEAR_MAX_SKEW_SECONDS", "0")),
         agent_profile=_effective_profile(env),
