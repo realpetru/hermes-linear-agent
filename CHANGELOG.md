@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.3
+
+`doctor` stopped lying, on the two checks where it lied most.
+
+- **The probes identify themselves.** `_probe()` and `bridge_status()` now send
+  `User-Agent: linear-agent-doctor/<version>`. Cloudflare — and any CDN with a bot rule —
+  answers the default `Python-urllib` agent with `403`, so a correctly configured install
+  behind a tunnel reported `public FAIL` and `signature FAIL` on every run. Reproduced on a
+  live install before the fix: same URL, `curl` 200, `urllib` 403. After it, six for six.
+- **A 403 no longer blames the bridge.** The failure text separates "blocked in front of the
+  bridge (proxy/CDN bot rule)" from "answered nothing (DNS, tunnel, firewall)", and the
+  signature check says outright that a 403 is not a signature problem — so nobody rotates a
+  working webhook secret chasing the wrong fault.
+- **One version everywhere.** Bumping `plugin.yaml` alone failed the release suite on CI,
+  because `tests/test_release.py` hardcoded the version and `dashboard/manifest.json` and the
+  Linear User-Agent in `server.py` carry it too. The test now parses `plugin.yaml`, so the
+  next release bumps one file and the suite checks the rest.
+
 ## 1.3.2
 
 Two defects the first live install exposed.
