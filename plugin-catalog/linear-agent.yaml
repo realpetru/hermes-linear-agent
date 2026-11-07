@@ -11,7 +11,7 @@ maintainer: realpetru
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "1.1.0"
+version: "1.2.0"
 capabilities:
   provides_tools:
     - linear_agent_status

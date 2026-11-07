@@ -1,7 +1,7 @@
 name: linear-agent
 label: Linear Agent
 kind: standalone
-version: 1.1.0
+version: 1.2.0
 author: realpetru
 homepage: https://github.com/realpetru/hermes-linear-agent
 description: >

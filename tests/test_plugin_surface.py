@@ -79,6 +79,79 @@ class RegistrationTests(unittest.TestCase):
         self.assertTrue(callable(self.ctx.cli[0][1]))
 
 
+class AgentCommandTests(unittest.TestCase):
+    """`hermes linear-agent agent set|list` — switching with zero config editing."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.tmp = tempfile.mkdtemp()
+        self._old = {k: os.environ.get(k) for k in
+                     ("LINEAR_AGENT_SETTINGS_DIR", "LINEAR_AGENT_PROFILE", "HERMES_HOME")}
+        os.environ["LINEAR_AGENT_SETTINGS_DIR"] = self.tmp
+        os.environ.pop("LINEAR_AGENT_PROFILE", None)
+        home = os.path.join(self.tmp, "home")
+        for name in ("default", "cody", "appy"):
+            os.makedirs(os.path.join(home, "profiles", name), exist_ok=True)
+        os.environ["HERMES_HOME"] = home
+
+    def tearDown(self):
+        import os
+
+        for k, v in self._old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stdout
+
+        from linear_hermes import plugin_api
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = plugin_api.main_for_tests(list(argv))
+        return code, buf.getvalue()
+
+    def test_set_writes_the_plugin_config(self):
+        code, out = self.run_cli("agent", "set", "cody")
+        self.assertEqual(code, 0)
+        from linear_hermes.settings import stored_profile
+
+        self.assertEqual(stored_profile(), "cody")
+        self.assertIn("no restart", out)
+
+    def test_set_validates_and_suggests(self):
+        code, out = self.run_cli("agent", "set", "coddy")
+        self.assertEqual(code, 2)
+        self.assertIn("Did you mean", out)
+        from linear_hermes.settings import stored_profile
+
+        self.assertEqual(stored_profile(), "")
+
+    def test_set_requires_a_name(self):
+        code, _ = self.run_cli("agent", "set")
+        self.assertEqual(code, 2)
+
+    def test_list_marks_the_active_profile(self):
+        self.run_cli("agent", "set", "cody")
+        code, out = self.run_cli("agent", "list")
+        self.assertEqual(code, 0)
+        self.assertIn("* cody", out)
+        self.assertIn("  appy", out)
+
+    def test_env_var_wins_and_is_reported(self):
+        import os
+
+        os.environ["LINEAR_AGENT_PROFILE"] = "appy"
+        self.run_cli("agent", "set", "cody")
+        code, out = self.run_cli("agent", "list")
+        self.assertIn("LINEAR_AGENT_PROFILE", out)
+
+
 class RealHermesShapeTests(unittest.TestCase):
     """When Hermes is importable, assert our call shape matches the real API."""
 

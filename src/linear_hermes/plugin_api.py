@@ -78,11 +78,21 @@ def bridge_status(url, timeout=3.0):
         return {"reachable": False, "url": url, "error": "%s: %s" % (type(exc).__name__, exc)}
 
 
+def _active_profile():
+    """env LINEAR_AGENT_PROFILE beats the persisted setting; "" means gateway default."""
+    env = (os.environ.get("LINEAR_AGENT_PROFILE") or "").strip().lower()
+    if env:
+        return env
+    from .settings import stored_profile
+
+    return stored_profile()
+
+
 def _agent_block():
     """Which agent answers, and what else is choosable."""
     from .profiles import ProfileError, available_profiles, validate_profile
 
-    configured = os.environ.get("LINEAR_AGENT_PROFILE", "").strip().lower()
+    configured = _active_profile()
     block = {
         "agent_profile": configured or "(gateway default)",
         "available_profiles": available_profiles(),
@@ -154,7 +164,9 @@ def _setup_cli(parser):
     status.add_argument("--url", default=os.environ.get("LINEAR_AGENT_BRIDGE_URL", DEFAULT_BRIDGE))
     authorize = sub.add_parser("authorize", help="Print the OAuth install URL")
     authorize.add_argument("--state", default="")
-    sub.add_parser("agent", help="Show which Hermes agent answers, and which are available")
+    agent = sub.add_parser("agent", help="Show or change which Hermes agent answers")
+    agent.add_argument("action", nargs="?", choices=["list", "set"], default=None)
+    agent.add_argument("profile", nargs="?", default=None)
 
 
 def _handle_cli(args):
@@ -173,15 +185,23 @@ def _handle_cli(args):
         print(tool_authorize_url(state=args.state))
         return 0
     if command == "agent":
+        action = getattr(args, "action", None)
+        if action == "list":
+            return _agent_list()
+        if action == "set":
+            return _agent_set(getattr(args, "profile", None))
         block = _agent_block()
         active = block["agent_profile"]
         print("which agent answers Linear: %s" % active)
         if block.get("agent_profile_valid") is False:
             print("  PROBLEM: %s" % block.get("agent_profile_error", "invalid profile"))
-        print("available profiles: %s" % ", ".join(block["available_profiles"]))
+        print("available profiles:")
+        for name in block["available_profiles"]:
+            print("  %s %s" % ("*" if name == active else " ", name))
         if block["routing"] != "(none)":
             print("label routing: %s" % block["routing"])
-        print("\nchange it with:  LINEAR_AGENT_PROFILE=<name>   (empty = gateway default)")
+        print("\nswitch with:  hermes linear-agent agent set <profile>")
+        print("label any Linear issue with a profile name (cody, appy, ...) to route it there")
         return 0
     print("usage: hermes linear-agent {serve|status|authorize|agent}")
     return 2
@@ -204,6 +224,54 @@ def tool_handler(fn, ctx):
 
 def _skill_path():
     return Path(__file__).resolve().parents[2] / "skills" / "linear-agent" / "SKILL.md"
+
+
+class _CliParser(__import__("argparse").ArgumentParser):
+    pass
+
+
+def main_for_tests(argv):
+    """Parse argv exactly as `hermes linear-agent ...` would, then run it."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="hermes linear-agent", add_help=False)
+    _setup_cli(parser)
+    return _handle_cli(parser.parse_args(list(argv)))
+
+
+def _agent_list():
+    from .profiles import available_profiles
+
+    active = _active_profile()
+    names = available_profiles()
+    for name in names:
+        print("%s %s" % ("*" if name == active else " ", name))
+    if not active:
+        print("\n(no profile set - the gateway default answers)")
+    if os.environ.get("LINEAR_AGENT_PROFILE"):
+        print("\nnote: LINEAR_AGENT_PROFILE is set in the environment and wins")
+    return 0
+
+
+def _agent_set(profile):
+    from .profiles import ProfileError, validate_profile
+    from .settings import env_shadows_profile, set_stored_profile, settings_path
+
+    if not profile:
+        print("usage: hermes linear-agent agent set <profile>")
+        return 2
+    try:
+        name = validate_profile(profile)
+    except ProfileError as exc:
+        print(str(exc))
+        return 2
+    path = set_stored_profile(name)
+    print("agent set to %s" % (name or "(gateway default)"))
+    print("saved in %s" % path)
+    print("takes effect on the next Linear issue - no restart needed")
+    if env_shadows_profile():
+        print("WARNING: LINEAR_AGENT_PROFILE is set in the environment and overrides this")
+    return 0
 
 
 def register_plugin_surface(ctx):

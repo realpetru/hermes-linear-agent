@@ -32,7 +32,7 @@ hermes plugins enable linear-agent
 hermes linear-agent authorize     # prints the OAuth URL — open as workspace admin
 hermes linear-agent serve         # start the bridge (one process, stdlib only)
 hermes linear-agent status        # reachability, counters, missing config, active agent
-hermes linear-agent agent         # which Hermes agent answers Linear, and what else exists
+hermes linear-agent agent list    # which agent answers Linear, and what else exists
 ```
 
 Then assign any issue to the agent in Linear. You should see a `thought` within ten
@@ -70,41 +70,57 @@ message telling the operator to run `authorize`.
 
 ## Which agent answers
 
-By default the bridge runs whatever agent the Hermes gateway serves by default. If you
-run more than one agent (profiles), say which one answers Linear:
+Run more than one Hermes agent? Two ways to choose who handles Linear, and neither
+needs you to edit a config file.
 
-```bash
-hermes linear-agent agent                       # who answers now, and what else exists
-export LINEAR_AGENT_PROFILE=cody                # Linear is handled by the cody agent
+**1. A label in Linear.** Put a label on the issue whose name is a profile — `cody`,
+`appy`, `studio`, whatever your fleet has — and that issue goes to that agent.
+Nothing to configure. Adding a label is two clicks, in the place you already work.
+
+```
+label the issue  cody   ->  the cody agent answers it
+label it         appy   ->  the appy agent answers it
+label it         bug    ->  matches no profile, so the default agent answers
 ```
 
-That is the whole setting. An empty value means "let the gateway decide", which is
-exactly what an existing install already does — nothing changes unless you set it.
+Labels are matched case-insensitively. A label that matches no profile is not an
+error: it is ignored and the issue falls through to the default agent, so you can
+keep ordinary labels like `bug` or `p1` on the same issues.
 
-Check it anytime with `hermes linear-agent agent`, which prints the active agent and
-every profile available on the host. A name that does not exist fails at startup with
-a list of valid ones and a near-miss suggestion, not a stack trace.
-
-### Routing specific issues elsewhere
-
-If you want one workspace where different issues go to different agents, add a label map:
+**2. One command.** Set the default for everything else:
 
 ```bash
-export LINEAR_AGENT_ROUTING='{"cody": "cody", "content": "studio"}'
+hermes linear-agent agent set cody     # persists to the plugin's own config
+hermes linear-agent agent list         # every profile, * marks the active one
+hermes linear-agent agent              # who answers now, and why
 ```
 
-Precedence, highest first:
+No restart: settings are re-read for each new issue (cached for five seconds), and
+the change is logged once as `agent profile: appy -> cody`.
 
-1. **a label route** — an issue carrying the `cody` label is answered by the `cody` agent
-2. **`LINEAR_AGENT_PROFILE`** — the default for everything else
-3. **the gateway default** — when neither is set
+**For containers and CI**, pin it in the environment instead — env wins over the
+stored setting:
 
-First matching label wins, in the order you wrote the map. Labels are matched
-case-insensitively. A payload without labels simply falls through to the default.
+```bash
+LINEAR_AGENT_PROFILE=cody
+```
+
+### Order of precedence
+
+1. an explicit `LINEAR_AGENT_ROUTING` map entry, for odd cases like a label that
+   should not share a name with a profile (`{"urgent-bug": "cody"}`) — **optional**
+2. a label whose name matches an existing profile
+3. `LINEAR_AGENT_PROFILE` / `agent set`
+4. the gateway default
+
+The JSON map used to be mandatory for any routing at all. It is now only an override.
+
+The acknowledgement in the thread names the agent that took the issue — "Picked up by
+cody — reading the issue now" — so you can see routing worked without reading config.
 
 One honest limitation: the profile decides **which agent thinks**, not what Linear sees.
 The actor in the thread is always the Linear app, because that is what `actor=app`
-means. Two profiles are two brains behind one Linear identity.
+means. Several profiles are several brains behind one Linear identity.
 
 ## Security model
 

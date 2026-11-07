@@ -42,6 +42,7 @@ class Config:
     max_skew_seconds: int = 0
     agent_profile: str = ""
     routing: dict = None
+    refresh_seconds: float = 5.0
 
     def redacted(self):
         """Safe-to-log view: proves a secret is present without revealing it."""
@@ -102,6 +103,26 @@ def default_env_file():
     return os.environ.get("LINEAR_AGENT_ENV_FILE", ".env")
 
 
+def _effective_profile(env):
+    """env LINEAR_AGENT_PROFILE beats the persisted plugin setting."""
+    value = _env(env, "LINEAR_AGENT_PROFILE", "")
+    if value:
+        return str(value).strip().lower()
+    from .settings import stored_profile
+
+    return stored_profile()
+
+
+def _effective_routing(env):
+    raw = _env(env, "LINEAR_AGENT_ROUTING", "")
+    if raw:
+        return _parse_routing(raw)
+    from .settings import read_settings
+
+    stored = read_settings().get("routing")
+    return {str(k).lower(): str(v).strip().lower() for k, v in stored.items()} if isinstance(stored, dict) else {}
+
+
 def load_config(env=None):
     if env is None:
         env = os.environ
@@ -129,8 +150,9 @@ def load_config(env=None):
         redirect_uri=_env(env, "LINEAR_REDIRECT_URI", "http://localhost:8650/oauth/callback") or "",
         heartbeat_seconds=int(_env(env, "HEARTBEAT_SECONDS", "45")),
         max_skew_seconds=int(_env(env, "LINEAR_MAX_SKEW_SECONDS", "0")),
-        agent_profile=(_env(env, "LINEAR_AGENT_PROFILE", "") or "").strip().lower(),
-        routing=_parse_routing(_env(env, "LINEAR_AGENT_ROUTING", "")),
+        agent_profile=_effective_profile(env),
+        routing=_effective_routing(env),
+        refresh_seconds=float(_env(env, "LINEAR_AGENT_REFRESH_SECONDS", "5") or 5),
     )
     if not cfg.webhook_secret:
         raise ConfigError("LINEAR_WEBHOOK_SECRET is not set")

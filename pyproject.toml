@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-linear-agent"
-version = "1.1.0"
+version = "1.2.0"
 description = "Makes Hermes a first-class Linear agent (phase 2)"
 requires-python = ">=3.9"
 dependencies = []

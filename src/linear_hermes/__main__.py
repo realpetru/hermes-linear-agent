@@ -63,12 +63,25 @@ def main():
     if cfg.routing:
         log.info("label routing: %s", ", ".join("%s -> %s" % (k, v) for k, v in cfg.routing.items()))
 
+    # Re-read settings per session (5s TTL) so switching agents needs no restart.
+    from .live_config import LiveConfig
+    from .profiles import available_profiles
+
+    live = LiveConfig(load_config, ttl=cfg.refresh_seconds)
+
+    def profile_for(payload):
+        current = live.get()
+        return choose_profile(
+            payload, current.agent_profile, current.routing, available_profiles()
+        )
+
     def adapter_for(payload):
-        return build_adapter(cfg, profile=choose_profile(payload, cfg.agent_profile, cfg.routing))
+        return build_adapter(live.get(), profile=profile_for(payload))
 
     handler = AgentSessionHandler(
         linear, build_adapter(cfg), store, cfg.agent_name,
         heartbeat_seconds=cfg.heartbeat_seconds, adapter_for=adapter_for,
+        profile_for=profile_for,
     )
 
     def on_event(payload, headers):

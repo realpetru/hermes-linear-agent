@@ -153,6 +153,30 @@ class HandlerTests(unittest.TestCase):
         h.run_session(info["session"], "do it")
         self.assertEqual([a[1] for a in self.linear.activities].count("thought"), 1)
 
+    def test_acknowledgement_names_the_agent(self):
+        self.build()
+        h = AgentSessionHandler(self.linear, FakeAdapter(), self.store,
+                                profile_for=lambda payload: "cody")
+        h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
+        self.assertIn("cody", self.linear.activities[0][2])
+
+    def test_acknowledgement_default_wording_without_a_profile(self):
+        self.build()
+        h = AgentSessionHandler(self.linear, FakeAdapter(), self.store,
+                                profile_for=lambda payload: "")
+        h.handle(PAYLOAD, {"Linear-Delivery": "d1"})
+        self.assertIn("default agent", self.linear.activities[0][2])
+
+    def test_acknowledgement_survives_a_broken_router(self):
+        self.build()
+
+        def boom(payload):
+            raise RuntimeError("routing exploded")
+
+        h = AgentSessionHandler(self.linear, FakeAdapter(), self.store, profile_for=boom)
+        self.assertTrue(h.handle(PAYLOAD, {"Linear-Delivery": "d1"})["handled"])
+        self.assertEqual(self.linear.activities[0][1], "thought")
+
     def test_adapter_for_routes_by_payload(self):
         default = FakeAdapter("default answer")
         special = FakeAdapter("special answer")

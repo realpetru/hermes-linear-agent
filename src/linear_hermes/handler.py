@@ -11,6 +11,8 @@ import threading
 log = logging.getLogger(__name__)
 
 ACK = "Picked this up — reading the issue now."
+ACK_NAMED = "Picked up by %s — reading the issue now."
+ACK_DEFAULT_AGENT = "Picked up by the default agent — reading the issue now."
 
 
 class AgentSessionHandler:
@@ -22,12 +24,15 @@ class AgentSessionHandler:
     """
 
     def __init__(self, linear, adapter, store, agent_name="Hermes", heartbeat_seconds=45,
-                 adapter_for=None):
+                 adapter_for=None, profile_for=None):
         self.linear = linear
         self.adapter = adapter
         # adapter_for(payload) lets one bridge answer different issues as different
         # Hermes agents (label routing). Defaults to the single adapter.
         self.adapter_for = adapter_for
+        # profile_for(payload) lets the acknowledgement name the agent that took the
+        # issue, so a user can see routing worked without reading any config.
+        self.profile_for = profile_for
         self.store = store
         self.agent_name = agent_name
         self.heartbeat_seconds = heartbeat_seconds
@@ -102,7 +107,7 @@ class AgentSessionHandler:
 
         # Acknowledge inside Linear's 10-second window, before any slow work.
         try:
-            self.linear.post_activity(session, "thought", ACK)
+            self.linear.post_activity(session, "thought", self._ack_text(payload))
         except Exception:
             log.exception("acknowledgement failed for session %s", session)
         return {"handled": True, "session": session, "delivery": delivery}
@@ -132,6 +137,15 @@ class AgentSessionHandler:
         t = threading.Thread(target=beat, daemon=True)
         t.start()
         return stop
+
+    def _ack_text(self, payload):
+        if self.profile_for is None:
+            return ACK
+        try:
+            profile = (self.profile_for(payload) or "").strip()
+        except Exception:  # noqa: BLE001 - an ack must never fail on routing
+            return ACK
+        return ACK_NAMED % profile if profile else ACK_DEFAULT_AGENT
 
     def run_session(self, session, prompt, idempotency_key=None, payload=None):
         adapter = self.adapter

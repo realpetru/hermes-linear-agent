@@ -24,7 +24,7 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.2.0"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(_HERE, "src")
