@@ -208,7 +208,11 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_public_url_from_the_settings_screen_is_used(self):
         from linear_hermes import plugin_api
 
-        urls = plugin_api._urls(self.Ctx({"public_url": "https://from-settings.example"}))
+        # A configured install answers from its environment or its credentials file first, so
+        # those two sources are emptied here: otherwise this asserts nothing about the screen.
+        with mock.patch.object(plugin_api, "_env_view", return_value={}), \
+             mock.patch.object(plugin_api, "read_setting", return_value=""):
+            urls = plugin_api._urls(self.Ctx({"public_url": "https://from-settings.example"}))
         self.assertEqual(urls["public_url"], "https://from-settings.example")
         self.assertEqual(urls["webhook_url"], "https://from-settings.example/webhook")
 

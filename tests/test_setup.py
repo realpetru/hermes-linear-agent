@@ -388,6 +388,18 @@ class DashboardStateTests(unittest.TestCase):
             os.environ["LINEAR_AGENT_ENV_FILE"] = self._old_env_file
 
     def test_an_unconfigured_install_asks_for_everything(self):
+        # "Unconfigured" has to be a fact of the test. On a configured box the public URL,
+        # the token and a live bridge would each turn a step green for the wrong reason.
+        from unittest import mock
+
+        with mock.patch.object(self.plugin_api, "_env_view", return_value={}), \
+             mock.patch.object(self.plugin_api, "read_setting", return_value=""), \
+             mock.patch.object(self.plugin_api, "bridge_status",
+                               return_value={"reachable": False, "url": "http://127.0.0.1:8650",
+                                             "version": None, "ok": False}):
+            return self._assert_unconfigured()
+
+    def _assert_unconfigured(self):
         state = self.plugin_api.setup_state()
         names = [step["name"] for step in state["steps"]]
         self.assertEqual(names,
