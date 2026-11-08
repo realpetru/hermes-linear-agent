@@ -81,7 +81,7 @@ class Setup:
     def __init__(self, env_path=None, public_url=None, yes=False, interactive=None,
                  which=None, runner=None, probe=None, sleep=None, out=None,
                  transport=None, timeout_install=300, timeout_bridge=60,
-                 clock=None, doctor_fn=None):
+                 clock=None, doctor_fn=None, compose_path=None):
         from .config import default_env_file, load_dotenv
 
         self.env_path = env_path or default_env_file()
@@ -103,6 +103,11 @@ class Setup:
         self.bridge_process = None
         self.bridge_log = None
         self._bridge_handle = None
+        # Which compose file (if any) decides between `docker compose up` and spawning the
+        # module. It is a parameter because it used to be "whatever is in the caller's CWD",
+        # which made the choice depend on where the test ran — and an untested branch is how
+        # the fresh-host failure survived.
+        self.compose_path = "docker-compose.yml" if compose_path is None else compose_path
 
     # ------------------------------------------------------------------ output
     def say(self, line=""):
@@ -268,7 +273,7 @@ class Setup:
                 "the configured bridge (%s) is not answering and it is not on this machine, "
                 "so setup will not try to start it — start it there, then re-run" % base)
 
-        compose = os.path.exists("docker-compose.yml")
+        compose = bool(self.compose_path) and os.path.exists(self.compose_path)
         docker = self._which("docker")
         try:
             if compose and docker:

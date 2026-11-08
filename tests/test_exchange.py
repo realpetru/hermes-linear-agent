@@ -1,10 +1,17 @@
 import os
 import unittest
 
+import isolation
+
 from linear_hermes import exchange
 
 
 class ExchangeTests(unittest.TestCase):
+    def setUp(self):
+        # `exchange` reads through read_setting, which falls back to the credentials file:
+        # without this, a `.env` in the checkout supplies the credentials this test removes.
+        isolation.apply(self)
+
     def test_extract_bare_code(self):
         self.assertEqual(exchange.extract_code("abc123"), "abc123")
 

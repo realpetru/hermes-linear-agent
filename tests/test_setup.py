@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 import unittest
 
+import isolation
+
 from linear_hermes.setup import (
     DONE,
     FAILED,
@@ -55,6 +57,8 @@ class FakeTransport:
 
 class SetupBase(unittest.TestCase):
     def setUp(self):
+        # A `.env` in the checkout must never stand in for what this test configured.
+        isolation.apply(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.env_path = os.path.join(self.tmp.name, ".env")
@@ -458,7 +462,8 @@ class FreshHostTests(SetupBase):
             calls["env"] = kwargs.get("env")
             calls["kwargs"] = kwargs
             handle = kwargs.get("stdout")
-            if handle is not None and log_text:
+            # `subprocess.PIPE` is an int; only a real file object can be written to.
+            if hasattr(handle, "write") and log_text:
                 handle.write(log_text.encode("utf-8"))
                 handle.flush()
             return FakeBridgeProcess(exit_code)
@@ -467,6 +472,9 @@ class FreshHostTests(SetupBase):
             runner=runner,
             probe=self.probe_for(calls) if health else (lambda url, timeout: (0, b"")),
             clock=self.clock_factory(),
+            # Pin the spawn branch: no compose file and no docker, whatever the CWD holds.
+            compose_path="",
+            which=lambda name: None,
         )
         return setup, calls
 
@@ -522,6 +530,8 @@ class FreshHostTests(SetupBase):
             runner=runner, probe=self.probe_for(calls, seen), clock=lambda: self._clock_state["now"],
             doctor_fn=lambda: ([("config", True, "fine")], True),
             transport=FakeTransport(),
+            compose_path="",
+            which=lambda name: None,
         )
         setup.sleep = lambda seconds: self._clock_state.__setitem__("now", self._clock_state["now"] + 1)
         setup.step_app = lambda: (DONE, "app registered")  # the human part, stubbed
@@ -557,6 +567,8 @@ class FreshHostTests(SetupBase):
             transport=FakeTransport(),
             doctor_fn=lambda: ([("config", True, "fine")], True),
             interactive=False, yes=True,
+            compose_path="",
+            which=lambda name: None,
         )
         setup.sleep = lambda seconds: self._clock_state.__setitem__("now", self._clock_state["now"] + 1)
         setup.step_app = lambda: (DONE, "app registered")   # the human part, stubbed

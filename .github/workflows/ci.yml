@@ -19,8 +19,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: dependencies the full suite imports
+        # Without these, 36 tests skip and CI is greener than reality: a green CI run once
+        # hid five failures that only appear when the dashboard code can actually import.
+        run: python -m pip install --upgrade pip fastapi uvicorn
+
       - name: unit tests
-        run: PYTHONPATH=src python -m unittest discover -s tests -v
+        run: |
+          set -o pipefail
+          PYTHONPATH=src python -m unittest discover -s tests -t tests -v 2>&1 | tee /tmp/tests.log
+
+      # The dependencies above are installed in every cell, so a skip here means a test
+      # decided it could not run — exactly the kind of green CI that shipped five failures.
+      - name: nothing is skipped
+        run: |
+          if grep -q "skipped=" /tmp/tests.log; then
+            echo "::error::tests were skipped although the full dependency set is installed"
+            grep "skipped=" /tmp/tests.log
+            exit 1
+          fi
+          echo "no skips: the full suite ran"
 
   validate:
     # `hermes plugins validate` is the catalog gate, but it needs a Hermes install:

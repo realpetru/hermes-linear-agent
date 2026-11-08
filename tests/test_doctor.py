@@ -7,6 +7,7 @@ import unittest
 
 from linear_hermes import plugin_api
 
+import isolation
 import local_endpoints
 from linear_hermes.oauth import save_tokens
 
@@ -14,6 +15,7 @@ from linear_hermes.oauth import save_tokens
 class _DoctorBase(object):  # mixin: unittest must not collect it directly
     # pylint: disable=no-member
     def setUp(self):
+        isolation.apply(self)
         self.home = tempfile.mkdtemp()
         self.settings_dir = tempfile.mkdtemp()
         self._env = {k: os.environ.get(k) for k in (

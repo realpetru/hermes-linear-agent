@@ -6,6 +6,8 @@ import unittest
 
 from linear_hermes.config import ConfigError, load_config
 
+import isolation
+
 BASE = {"LINEAR_WEBHOOK_SECRET": "s3cret"}
 
 
@@ -17,6 +19,7 @@ def env(**overrides):
 
 class HomeTestCase(unittest.TestCase):
     def setUp(self):
+        isolation.apply(self)
         self.home = tempfile.mkdtemp()
         self._home = os.environ.get("HERMES_HOME")
         self._cwd = os.getcwd()

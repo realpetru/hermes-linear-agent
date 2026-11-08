@@ -24,6 +24,7 @@ from linear_hermes.config import Config, load_config
 from linear_hermes.oauth import make_state, save_tokens
 from linear_hermes.server import serve, serve_unconfigured
 
+import isolation
 import local_endpoints
 
 
@@ -207,3 +208,30 @@ class UnconfiguredBootTests(unittest.TestCase):
         status, body = post(self.port, "/webhook")
         self.assertEqual(status, 503)
         self.assertEqual(json.loads(body)["error"], "not_configured")
+
+
+class HermeticTests(unittest.TestCase):
+    """The suite must not depend on what happens to be in the working directory."""
+
+    def setUp(self):
+        isolation.apply(self)
+
+    def test_a_dotenv_in_the_checkout_is_ignored(self):
+        from linear_hermes import plugin_api
+
+        work = tempfile.mkdtemp()
+        saved = os.getcwd()
+        try:
+            with open(os.path.join(work, ".env"), "w") as fh:
+                fh.write("LINEAR_CLIENT_ID=from-the-checkout\n")
+            os.chdir(work)
+            view = plugin_api._env_view()
+            self.assertNotEqual(view.get("LINEAR_CLIENT_ID"), "from-the-checkout",
+                                "a stray .env must not configure a test")
+        finally:
+            os.chdir(saved)
+
+    def test_the_isolated_file_is_the_one_every_command_uses(self):
+        from linear_hermes.config import credentials_file
+
+        self.assertEqual(credentials_file(), os.path.abspath(isolation.path()))
