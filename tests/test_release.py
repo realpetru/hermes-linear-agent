@@ -27,9 +27,34 @@ class VersionTests(unittest.TestCase):
     def test_catalog_version(self):
         self.assertIn('version: "%s"' % EXPECTED, read("plugin-catalog/linear-agent.yaml"))
 
+    def test_dashboard_manifest_version(self):
+        import json
+
+        manifest = json.loads(read("dashboard/manifest.json"))
+        self.assertEqual(manifest["version"], EXPECTED,
+                         "the tab shows this version; it must match plugin.yaml")
+
+    def test_server_user_agent_version(self):
+        self.assertIn('server_version = "hermes-linear-agent/%s"' % EXPECTED, read("src/linear_hermes/server.py"))
+
+    def test_package_version(self):
+        self.assertIn('__version__ = "%s"' % EXPECTED, read("src/linear_hermes/__init__.py"))
+
+    def test_the_authorize_link_uses_the_state_key(self):
+        """The bug behind "Install link expired" straight after setup."""
+        text = read("src/linear_hermes/plugin_api.py")
+        self.assertIn('make_state(state_key)', text)
+        self.assertIn('read_setting("LINEAR_STATE_KEY"', text)
+        self.assertNotIn("make_state(webhook_secret)", text)
+        makefile = read("Makefile")
+        self.assertIn("LINEAR_STATE_KEY", makefile)
+        self.assertNotIn("make_state(os.environ['LINEAR_WEBHOOK_SECRET'])", makefile)
+
     def test_no_stale_old_versions(self):
-        for rel in ("__init__.py", "src/linear_hermes/server.py"):
+        for rel in ("__init__.py", "src/linear_hermes/server.py",
+                    "src/linear_hermes/__init__.py", "dashboard/manifest.json"):
             self.assertNotIn("0.1.0", read(rel), rel)
+        self.assertNotIn("1.4.3", read("src/linear_hermes/__init__.py"))
 
 
 class PackagingTests(unittest.TestCase):

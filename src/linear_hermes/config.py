@@ -107,8 +107,38 @@ def load_dotenv(path):
     return values
 
 
+def credentials_file():
+    """THE place credentials live. One store, chosen the same way every time.
+
+    ``setup`` writes here and ``read_setting`` reads here, so a fresh process can never
+    report "credentials missing" while they sit in a file next door — which is exactly what
+    happened when setup wrote ``./.env`` in the caller's directory while doctor, status and
+    authorize read the Hermes secret scope and ``os.environ``.
+
+    Inside Hermes that is the profile's own ``.env`` (``$HERMES_HOME/.env``), the file the
+    gateway loads for this profile. Standalone (``make dev`` in a checkout) it stays ``.env``
+    next to the code, where nothing but a developer looks.
+    """
+    explicit = os.environ.get("LINEAR_AGENT_ENV_FILE")
+    if explicit:
+        return os.path.abspath(explicit)
+    if os.environ.get("HERMES_HOME"):
+        from .settings import hermes_home
+
+        return os.path.join(hermes_home(), ".env")
+    try:
+        import agent.secret_scope  # noqa: F401  - present only inside Hermes
+
+        from .settings import hermes_home
+
+        return os.path.join(hermes_home(), ".env")
+    except Exception:  # noqa: BLE001 - standalone checkout, no Hermes in sight
+        return ".env"
+
+
 def default_env_file():
-    return os.environ.get("LINEAR_AGENT_ENV_FILE", ".env")
+    """Backwards-compatible name for the same file; keep one implementation."""
+    return credentials_file()
 
 
 def _effective_profile(env):

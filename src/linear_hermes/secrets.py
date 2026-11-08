@@ -28,4 +28,11 @@ def read_setting(name, default=None, env=None):
         pass
     if env is not None:
         return default
-    return os.environ.get(name, default)
+    value = os.environ.get(name)
+    if value is not None:
+        return value
+    # Last: the credentials file `setup` writes. Without this a fresh CLI process reports
+    # "missing" while the values sit one directory away — the defect the audit found.
+    from .config import credentials_file, load_dotenv
+
+    return load_dotenv(credentials_file()).get(name, default)

@@ -22,6 +22,11 @@ PLUGIN_ID = "linear-agent"
 FILENAME = "settings.json"
 
 
+def hermes_home():
+    """The Hermes profile home: $HERMES_HOME, else ~/.hermes (the CLI's own default)."""
+    return os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+
+
 def settings_dir():
     explicit = os.environ.get("LINEAR_AGENT_SETTINGS_DIR")
     if explicit:

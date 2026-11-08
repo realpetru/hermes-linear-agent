@@ -147,14 +147,21 @@ def tool_authorize_url(ctx=None, state="", **_kwargs):
         }, indent=2)
     # The state is signed with the webhook secret and the callback refuses without it,
     # so printing a URL when the secret is missing hands out an unredeemable link.
-    webhook_secret = str(read_setting("LINEAR_WEBHOOK_SECRET", "") or "")
-    if not webhook_secret:
+    # The link is signed with the state key — the one `setup` generates for exactly this —
+    # and only falls back to the webhook secret when no state key exists. Signing with the
+    # webhook secret while the server verified the state key produced links that died with
+    # "Install link expired" immediately after a successful setup.
+    state_key = str(
+        read_setting("LINEAR_STATE_KEY", "") or read_setting("LINEAR_WEBHOOK_SECRET", "") or ""
+    )
+    if not state_key:
         return json.dumps({
             "ok": False,
-            "error": "LINEAR_WEBHOOK_SECRET is not set",
-            "why": "the install link is signed with it, so the callback would reject any "
-                   "link printed now (\"Install link expired\")",
-            "next_step": "Create the Linear app's webhook (docs/INSTALL.md step 2), then re-run.",
+            "error": "no install-link key",
+            "why": "the callback verifies a signed state value; without LINEAR_STATE_KEY (or "
+                   "LINEAR_WEBHOOK_SECRET to fall back on) any link printed now would be "
+                   "rejected as \"Install link expired\"",
+            "next_step": "Run `hermes linear-agent setup` — it generates LINEAR_STATE_KEY.",
         }, indent=2)
     # LINEAR_REDIRECT_URI is what the token exchange sends, so it must be what the
     # authorize request asks for; otherwise installs die with redirect_uri mismatch.
@@ -172,7 +179,7 @@ def tool_authorize_url(ctx=None, state="", **_kwargs):
     from .oauth import authorize_url, make_state
 
     if not state:
-        state = make_state(webhook_secret)
+        state = make_state(state_key)
     url = authorize_url(client_id, redirect, state=state)
     return json.dumps({
         "ok": True,

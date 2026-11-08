@@ -17,14 +17,16 @@ dev:
 test:
 	$(PY) -m unittest discover -s tests -v
 
-# The helper targets below load .env themselves; `hermes linear-agent ...` does not
-# need this because it reads Hermes' own credential store.
+# The helper targets below load the credentials file themselves; `hermes linear-agent ...`
+# does not need this because it reads the same file through read_setting.
 authorize:
-	@set -a; [ -f .env ] && . ./.env; set +a; \
+	@set -a; [ -f "$${LINEAR_AGENT_ENV_FILE:-.env}" ] && . "$${LINEAR_AGENT_ENV_FILE:-.env}"; set +a; \
 	PYTHONPATH=src $(PY) -c "import os; from linear_hermes.oauth import authorize_url, make_state; \
+	key = os.environ.get('LINEAR_STATE_KEY') or os.environ.get('LINEAR_WEBHOOK_SECRET'); \
+	assert key, 'LINEAR_STATE_KEY is not set — run: hermes linear-agent setup'; \
 	print(authorize_url(os.environ['LINEAR_CLIENT_ID'], \
 	os.environ.get('LINEAR_REDIRECT_URI') or (os.environ.get('LINEAR_AGENT_PUBLIC_URL','').rstrip('/') + '/oauth/callback'), \
-	state=make_state(os.environ['LINEAR_WEBHOOK_SECRET'])))"
+	state=make_state(key)))"
 
 exchange:
 	@test -n "$(CODE)" || (echo "usage: make exchange CODE=<code from redirect>"; exit 2)

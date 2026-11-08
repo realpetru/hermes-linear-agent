@@ -136,7 +136,8 @@ class ExchangeEnvTests(HomeTestCase):
 
 
 class AuthorizeGuardTests(HomeTestCase):
-    def test_authorize_refuses_without_the_webhook_secret(self):
+    def test_authorize_refuses_without_any_install_key(self):
+        """No LINEAR_STATE_KEY and no webhook secret: printing a link would mint a dead one."""
         from linear_hermes import plugin_api
 
         original = plugin_api.read_setting
@@ -151,7 +152,26 @@ class AuthorizeGuardTests(HomeTestCase):
 
         payload = json.loads(doc)
         self.assertFalse(payload["ok"])
-        self.assertIn("LINEAR_WEBHOOK_SECRET", payload["error"])
+        self.assertIn("LINEAR_STATE_KEY", payload["next_step"])
+
+    def test_authorize_signs_with_the_state_key_setup_generates(self):
+        """The whole P0: setup writes LINEAR_STATE_KEY, the link must be signed with it."""
+        from linear_hermes import plugin_api, oauth
+
+        values = {"LINEAR_CLIENT_ID": "cid", "LINEAR_STATE_KEY": "k" * 64,
+                  "LINEAR_WEBHOOK_SECRET": "linear-signing",
+                  "LINEAR_AGENT_PUBLIC_URL": "https://example.test"}
+        original = plugin_api.read_setting
+        plugin_api.read_setting = lambda name, default=None, env=None: values.get(name, default or "")
+        try:
+            payload = __import__("json").loads(plugin_api.tool_authorize_url())
+        finally:
+            plugin_api.read_setting = original
+        self.assertTrue(payload["ok"], payload)
+        state = payload["authorize_url"].split("state=")[1].split("&")[0]
+        self.assertTrue(oauth.verify_state("k" * 64, state), "the server verifies cfg.state_key")
+        self.assertFalse(oauth.verify_state("linear-signing", state),
+                         "signing with the webhook secret is what produced dead links")
 
 
 if __name__ == "__main__":

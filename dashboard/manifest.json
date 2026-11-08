@@ -3,7 +3,7 @@
   "label": "Linear agent",
   "description": "Choose which Hermes agent answers Linear issues",
   "icon": "Bot",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "tab": {
     "path": "/linear-agent",
     "position": "after:skills"
