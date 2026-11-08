@@ -10,6 +10,7 @@ Contract supplied by @hermes from the api_server source (port 8642):
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -107,12 +108,28 @@ class SubprocessAdapter:
         self.profile = profile
         self.timeout = timeout
 
+    #: Everything the CLI needs to start. Nothing the bridge holds.
+    ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL",
+                "TMPDIR", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                "VIRTUAL_ENV", "PYTHONPATH", "SYSTEMROOT", "COMSPEC")
+
+    @classmethod
+    def _env(cls):
+        """A minimal environment for `hermes chat`.
+
+        The prompt is untrusted Linear content. If it talks the model into printing its
+        environment, everything the bridge holds — Hermes keys, the app token, the webhook
+        secret — is in the answer, so the child never sees them.
+        """
+        return {k: v for k, v in os.environ.items() if k in cls.ENV_KEEP}
+
     def run(self, prompt, progress=None, idempotency_key=None):
         cmd = [self.hermes_bin, "chat", "-q", prompt]
         if self.profile:
             cmd = [self.hermes_bin, "-p", self.profile, "chat", "-q", prompt]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout,
+                                  env=self._env())
         except subprocess.TimeoutExpired:
             raise AdapterError("hermes chat timed out after %ss" % self.timeout)
         if proc.returncode != 0:

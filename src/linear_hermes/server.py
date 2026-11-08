@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import logging
 import os
@@ -63,11 +64,20 @@ def make_handler(cfg, on_event):
             self.wfile.write(raw)
 
         def _html(self, code, title, detail):
-            body = ("<html><body style=\"font-family:system-ui;padding:2rem\">"
-                    "<h2>%s</h2><p>%s</p></body></html>" % (title, detail)).encode("utf-8")
+            # Everything here can carry a value Linear sent us (?error=...), so it is escaped:
+            # the page is served from the same origin that finishes the install.
+            body = ("<!doctype html><html><head><meta charset=\"utf-8\">"
+                    "<title>%s</title></head>"
+                    "<body style=\"font-family:system-ui;padding:2rem\">"
+                    "<h2>%s</h2><p>%s</p></body></html>"
+                    % (html.escape(str(title)), html.escape(str(title)),
+                       html.escape(str(detail)))).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy",
+                             "default-src 'none'; style-src 'unsafe-inline'")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
@@ -163,9 +173,56 @@ def make_handler(cfg, on_event):
             ).start()
 
         def log_message(self, fmt, *args):
-            log.info("%s - %s", self.address_string(), fmt % args)
+            # Log the method and the path, never the query: /oauth/callback carries the
+            # authorization code and the signed state, which are single-use credentials.
+            parts = (getattr(self, "requestline", "") or "").split(" ")
+            line = " ".join(parts[:2]) if len(parts) >= 2 else (fmt % args)
+            log.info("%s - %s", self.address_string(), line.split("?")[0])
 
     return Handler
+
+
+def serve_unconfigured(bind, port, reason, missing=()):
+    """Serve *something* when the config is incomplete.
+
+    A container whose LINEAR_WEBHOOK_SECRET is missing used to raise in load_config and exit,
+    so the CMD crash-looped with nothing to inspect. Instead: stay up, answer /healthz 503
+    with the reason, and let /status and the logs name what is missing.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "hermes-linear-agent/%s" % SERVICE_VERSION
+
+        def _send(self, code, body):
+            raw = json.dumps(body).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):  # noqa: N802
+            path = urlparse(self.path).path.rstrip("/") or "/"
+            if path in ("/healthz", "/health"):
+                return self._send(503, {"status": "not_configured", "reason": reason,
+                                        "missing": list(missing)})
+            if path == "/status":
+                return self._send(200, {"status": "not_configured", "service": "linear-agent",
+                                        "version": SERVICE_VERSION, "reason": reason,
+                                        "missing": list(missing)})
+            return self._send(404, {"error": "not found"})
+
+        def do_POST(self):  # noqa: N802
+            return self._send(503, {"error": "not_configured", "reason": reason})
+
+        def log_message(self, fmt, *args):
+            parts = (getattr(self, "requestline", "") or "").split(" ")
+            line = " ".join(parts[:2]) if len(parts) >= 2 else (fmt % args)
+            log.info("%s - %s", self.address_string(), line.split("?")[0])
+
+    httpd = ThreadingHTTPServer((bind, port), Handler)
+    log.error("serving unconfigured on %s:%s: %s", bind, port, reason)
+    return httpd
 
 
 def serve(cfg, on_event):

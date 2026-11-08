@@ -102,10 +102,17 @@ class UrlTests(HomeTestCase):
 
 
 class ExchangeEnvTests(HomeTestCase):
-    def test_exchange_reads_the_repo_dotenv(self):
-        """The documented fallback must load .env, not only os.environ."""
+    def test_exchange_reads_the_credentials_file(self):
+        """The documented fallback must load the credentials file, not only os.environ.
+
+        `credentials_file()` is $LINEAR_AGENT_ENV_FILE when set, else the Hermes profile
+        .env, else ./.env in a standalone checkout — one store for setup, doctor and this.
+        """
         work = tempfile.mkdtemp()
-        pathlib.Path(work, ".env").write_text(
+        credentials = pathlib.Path(work, ".env")
+        os.environ["LINEAR_AGENT_ENV_FILE"] = str(credentials)
+        self.addCleanup(lambda: os.environ.pop("LINEAR_AGENT_ENV_FILE", None))
+        credentials.write_text(
             "LINEAR_CLIENT_ID=cid-from-dotenv\n"
             "LINEAR_CLIENT_SECRET=csec\n"
             "LINEAR_AGENT_PUBLIC_URL=https://host.example\n"

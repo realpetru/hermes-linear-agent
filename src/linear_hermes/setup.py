@@ -129,11 +129,20 @@ class Setup:
                 merged.append("%s=%s" % (key, value))
         directory = os.path.dirname(os.path.abspath(self.env_path))
         os.makedirs(directory, exist_ok=True)
-        tmp = self.env_path + ".tmp"
-        with open(tmp, "w") as fh:
-            fh.write("\n".join(merged).rstrip() + "\n")
-        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 0600 before content lands
-        os.replace(tmp, self.env_path)
+        # mkstemp creates the file 0600 before any byte of a secret lands in it: the old
+        # write-then-chmod order had a window, and a crash inside it left 0644 behind.
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".env.", text=True)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+                fh.write("\n".join(merged).rstrip() + "\n")
+            os.replace(tmp, self.env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         self.env.update(updates)
         for key, value in updates.items():
             os.environ[key] = value

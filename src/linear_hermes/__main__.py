@@ -3,20 +3,43 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import signal
 
 from .adapters import build_adapter
-from .config import load_config
+from .config import ConfigError, load_config
 from .dedupe import DeliveryStore
 from .handler import AgentSessionHandler
 from .linear import DeferredLinearClient, LinearClient, urllib_transport
 from .oauth import TokenProvider, load_tokens
-from .server import serve
+from .server import serve, serve_unconfigured
 from . import runtime_status
 
 
+def _serve_unconfigured(exc):
+    """Stay up when the config is incomplete, so the container is inspectable.
+
+    `python -m linear_hermes` is the image's CMD. Raising out of load_config made the
+    container crash-loop with no way to see why; now /healthz answers 503 with the reason.
+    """
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    log = logging.getLogger("linear_hermes")
+    missing = [name for name in ("LINEAR_WEBHOOK_SECRET",) if not (os.environ.get(name) or "").strip()]
+    bind = os.environ.get("BIND") or "127.0.0.1"
+    port = int(os.environ.get("PORT") or 8650)
+    log.error("not configured: %s", exc)
+    httpd = serve_unconfigured(bind, port, str(exc), missing)
+    signal.signal(signal.SIGTERM, lambda *_: httpd.shutdown())
+    httpd.serve_forever()
+    return 0
+
+
 def main():
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except ConfigError as exc:
+        return _serve_unconfigured(exc)
     logging.basicConfig(
         level=getattr(logging, cfg.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -35,10 +58,20 @@ def main():
         )
         linear = LinearClient(provider.token)
         log.info("using Linear APP token (posts as the agent)")
+    elif cfg.linear_api_key and not cfg.allow_personal_key:
+        # The failure this project exists to prevent: comments appearing as a human. It is now
+        # opt-in, loud, and off by default.
+        linear = DeferredLinearClient(
+            "LINEAR_API_KEY is set and deliberately ignored: a personal key posts activities "
+            "under the installer's identity, not the agent's. Set LINEAR_ALLOW_PERSONAL_KEY=1 "
+            "only to debug, or finish the install with `hermes linear-agent authorize`."
+        )
+        log.warning("LINEAR_API_KEY is set and IGNORED — set LINEAR_ALLOW_PERSONAL_KEY=1 to use "
+                    "it for debugging (activities would appear under the installer's identity)")
     elif cfg.linear_api_key:
         linear = LinearClient(cfg.linear_api_key)
-        log.warning("no Linear app token; falling back to personal API key "
-                    "(activities will appear under the installer's identity)")
+        log.warning("LINEAR_ALLOW_PERSONAL_KEY is set: activities will appear under the "
+                    "installer's identity, not the agent's — debugging only")
     else:
         # A fresh install has no credential yet: that is normal, not fatal.
         linear = DeferredLinearClient(

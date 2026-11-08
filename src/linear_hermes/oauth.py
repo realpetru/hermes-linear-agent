@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import tempfile
 import time
 import urllib.parse
 
@@ -96,14 +97,25 @@ def needs_refresh(record, now=None, skew=300):
 
 
 def save_tokens(path, record):
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(record, fh)
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    os.replace(tmp, path)
+    """Write the token file 0600 from the instant it exists.
+
+    The old order (write, then chmod) left a window where the access token was world-readable,
+    and a crash inside that window left it that way. mkstemp creates the file already private.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".linear-tokens.", text=True)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+            json.dump(record, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load_tokens(path):

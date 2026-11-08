@@ -37,6 +37,7 @@ class Config:
     db_path: str
     agent_name: str
     log_level: str
+    allow_personal_key: bool = False
     linear_client_id: str = ""
     linear_client_secret: str = ""
     linear_token_path: str = ""
@@ -216,6 +217,8 @@ def load_config(env=None):
         webhook_secret=_env(env, "LINEAR_WEBHOOK_SECRET", "") or "",
         state_key=_env(env, "LINEAR_STATE_KEY", "") or "",
         linear_api_key=_env(env, "LINEAR_API_KEY", "") or "",
+        allow_personal_key=str(_env(env, "LINEAR_ALLOW_PERSONAL_KEY", "") or "").strip().lower()
+        in ("1", "true", "yes", "on"),
         hermes_adapter=(_env(env, "HERMES_ADAPTER", "gateway") or "gateway").lower(),
         gateway_url=(_env(env, "HERMES_GATEWAY_URL", "http://127.0.0.1:8642") or "").rstrip("/"),
         gateway_token=_env(env, "HERMES_GATEWAY_TOKEN", "") or "",
