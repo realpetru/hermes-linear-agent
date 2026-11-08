@@ -15,28 +15,28 @@ Linear posts webhooks from its own servers, so the bridge must be reachable over
 HTTPS. Linear refuses `localhost`, `127.0.0.1` and private address ranges — there is no
 "just test it locally" option for the webhook half.
 
-Everything below needs this URL, so do it first.
+**This plugin does not create that endpoint.** Put a public HTTPS address in front of the
+bridge however you already do it — a reverse proxy on the host (Caddy, Nginx), a managed
+tunnel, or a small VPS — and note the address:
 
-**Quick tunnel (first install, laptop).**
-
-```bash
-# terminal 1 — leave running
-cloudflared tunnel --url http://127.0.0.1:8650
+```text
+# whatever fronts 127.0.0.1:8650 (or your PORT)
+https://linear.example.com
 ```
 
-It prints `https://<random-words>.trycloudflare.com`. That is your public base. Note it
-and keep the terminal open.
+Then either pass it to setup (`--public-url https://linear.example.com`) or set
+`LINEAR_AGENT_PUBLIC_URL` in `.env`. Setup probes `/healthz` on it and reports `done` only
+when it answers, so a wrong or unreachable address fails on evidence rather than silently.
 
-> The hostname changes every time you restart a quick tunnel. When it changes, you must
-> edit **two** fields in Linear: the app's Callback URL and the Webhook URL. For anything
-> past a test, use a named Cloudflare tunnel with a DNS record, an ngrok reserved domain,
-> or a VPS with Caddy — the hostname must survive a reboot.
+> A quick-tunnel hostname changes every restart, and that breaks **two** fields in Linear:
+> the app's Callback URL and the Webhook URL. For anything past a test, use a stable
+> hostname with a DNS record you control.
 
-**If the tunnel is not on the bridge machine:** the bridge must listen on more than
-loopback. Use `hermes linear-agent serve --bind 0.0.0.0` (or set `BIND=0.0.0.0` in
+**If the tunnel or proxy is not on the bridge machine:** the bridge must listen on more
+than loopback. Use `hermes linear-agent serve --bind 0.0.0.0` (or set `BIND=0.0.0.0` in
 `.env` — `serve` honours it), and let a firewall be the boundary.
 
-**Two URLs, two jobs.** They are often the same host, but they do not have to be:
+**Two URLs, two jobs.****Two URLs, two jobs.** They are often the same host, but they do not have to be:
 
 | URL | Who connects | Localhost allowed? |
 |---|---|---|

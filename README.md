@@ -40,8 +40,10 @@ The honest floor: **two pastes, one click to install, everything else automatic.
 * the webhook URL and the signing secret are never typed — the app token creates the
   webhook, with a secret this command generates and stores at mode 600;
 * the callback URL is printed ready to paste next to the app-creation link;
-* the public URL comes from a tunnel when `cloudflared` or `ngrok` is installed, or from
-  `--public-url https://your.host` if you already have one.
+* the public URL is the one you already have. **This plugin does not create tunnels**:
+  point a reverse proxy, a managed tunnel or a small VPS at the bridge port and pass the
+  address in with `--public-url`, or set `LINEAR_AGENT_PUBLIC_URL`. Setup then calls
+  `/healthz` on it and only reports `done` when it actually answers.
 
 It is **resumable**: every step reports `done`, `skipped`, `needs you` or `FAILED`, and
 re-running it picks up where you stopped. A second run creates nothing twice.
@@ -51,13 +53,9 @@ hermes linear-agent setup --json     # the same checklist, machine-readable
 hermes linear-agent setup --yes      # never prompt; use only what is already configured
 ```
 
-A quick tunnel hands out a new hostname every time it restarts, which breaks the callback
-and the webhook. For anything long-lived use a named tunnel:
-
-```sh
-cloudflared tunnel create hermes
-# then point a DNS name at it and re-run setup with --public-url https://linear.example.com
-```
+Whatever public address you use, it has to stay the same: the OAuth callback and the
+webhook are registered against it. A free quick-tunnel hostname changes every restart,
+which breaks both — use a stable address with a DNS name instead.
 
 ---
 
@@ -70,18 +68,21 @@ path, and the systemd/launchd units.
 
 ### 1. Get a public URL
 
-Linear will not POST to `localhost`. For a first install, a quick tunnel is enough:
+Linear will not POST to `localhost`, so the bridge needs a public HTTPS address. **This
+plugin does not create one** — use whatever you already run: a reverse proxy on the host
+(Caddy, Nginx), a managed tunnel, or a small VPS.
 
-```bash
-# terminal 1 — leave running for the whole install
-cloudflared tunnel --url http://127.0.0.1:8650
-# => https://calm-fox-1234.trycloudflare.com
+Whatever it is, it must forward to the bridge on `127.0.0.1:8650` (or your `PORT`), and the
+address must stay the same for the life of the install: the app's Callback URL and the
+Webhook URL are both registered against it. A free quick-tunnel hostname changes on every
+restart, which breaks both — use a stable DNS name.
+
+```sh
+hermes linear-agent setup --public-url https://linear.example.com
 ```
 
-That hostname is your `LINEAR_AGENT_PUBLIC_URL`. **A quick tunnel gets a new hostname
-every restart**, which breaks the two URLs you paste into Linear; for anything past
-testing use a named tunnel (Cloudflare, ngrok reserved domain) or a VPS with Caddy.
-See [INSTALL §0](docs/INSTALL.md#0-a-public-https-url).
+Setup calls `/healthz` on that address and only reports `done` when it answers. See
+[INSTALL §0](docs/INSTALL.md#0-a-public-https-url).
 
 ### 2. Create the Linear OAuth app
 

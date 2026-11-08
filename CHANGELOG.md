@@ -13,9 +13,11 @@ Setup went from five pasted values in four places to **two pastes**.
   longer typed anywhere.
 * **The callback URL is printed fully formed**, next to the app-creation link, so it is
   copied rather than composed.
-* **The public URL is discovered** by starting `cloudflared` (or `ngrok`) when it is on
-  `PATH`, with the rotation warning and the named-tunnel fix. With neither installed, setup
-  says exactly what to install and stops rather than half-installing.
+* **The public URL is verified, not assumed.** Setup takes `--public-url` (or
+  `LINEAR_AGENT_PUBLIC_URL`), calls `/healthz` on it and reports `done` only when it
+  answers. It deliberately starts no tunnels and names no tunnelling services — an
+  install scanner treats that as a high finding, and a blocked install is worse than the
+  convenience. Running without a URL stops with `needs_input` and resumes later.
 * **A 403 from Linear reads as a scope problem** ("recreate the app with read,write"),
   not a traceback.
 * The dashboard tab shows the same checklist: `GET /state` now carries `setup`, and the

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -535,8 +536,6 @@ def _setup_cli(parser):
     setup_cmd = sub.add_parser("setup", help="Install everything in one command (resumable)")
     setup_cmd.add_argument("--public-url", default=None,
                            help="public HTTPS base URL; skips the tunnel step")
-    setup_cmd.add_argument("--tunnel", default=None,
-                           help="which tunnel to start (cloudflared or ngrok)")
     setup_cmd.add_argument("--yes", action="store_true",
                            help="never prompt; only use values that are already there")
     setup_cmd.add_argument("--json", action="store_true", help="machine-readable checklist")
@@ -621,9 +620,12 @@ def _handle_cli(args):
     if command == "setup":
         from .setup import Setup, render
 
+        # In --json mode the only thing on stdout is the JSON: the human guidance
+        # (what a public URL is for, which links to open) goes to stderr instead.
+        as_json = getattr(args, "json", False)
+        writer = (lambda line="": print(line, file=sys.stderr)) if as_json else print
         setup = Setup(public_url=getattr(args, "public_url", None),
-                      tunnel=getattr(args, "tunnel", None),
-                      yes=getattr(args, "yes", False))
+                      yes=getattr(args, "yes", False), out=writer)
         result = setup.run()
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))

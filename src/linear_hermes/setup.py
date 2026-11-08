@@ -12,8 +12,8 @@ What it removes:
   ``WebhookCreateInput`` accepts a caller-supplied ``secret``);
 * the **callback URL** is printed fully formed next to the app-creation link, so it is
   copied rather than composed;
-* the **public URL** is discovered by starting a tunnel, when ``cloudflared`` or ``ngrok``
-  is present.
+* the **public URL** is whatever the operator already runs — a reverse proxy, a named
+  tunnel, a small VPS — and setup proves it answers before going on.
 
 Two pastes remain, both unavoidable: the Linear app's client id and client secret.
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -58,19 +57,17 @@ mutation CreateWebhook($input: WebhookCreateInput!) {
 # deliberately not subscribed: they would arrive, be ignored, and cost Linear quota.
 WEBHOOK_RESOURCES = ["AgentSessionEvent"]
 
-TUNNEL_PATTERN = re.compile(r"https://[a-z0-9-]+\.(?:trycloudflare\.com|ngrok\.io|ngrok-free\.app)")
+PUBLIC_URL_HELP = """\
+Linear needs a public HTTPS address it can reach: one for the OAuth callback, one for the
+webhook. This plugin does not create one — it uses the one you already have.
 
-TUNNEL_HELP = """\
-No tunnel found. Linear needs a public HTTPS address for the callback and the webhook,
-so install one of these and re-run the same command:
-
-  brew install cloudflared          # then: setup starts the tunnel for you
-  brew install ngrok                # or this
-
-Already have a public address (a VPS, a named tunnel, a reverse proxy)? Set it and
-setup skips this step entirely:
+Point any tunnel or reverse proxy at the bridge port (8650 by default) and pass the
+address in:
 
   hermes linear-agent setup --public-url https://linear.example.com
+
+Or set LINEAR_AGENT_PUBLIC_URL in .env. A reverse proxy, a managed tunnel, or a small
+VPS all work; whatever you already run is fine.
 """
 
 
@@ -89,8 +86,8 @@ class Setup:
     """Run the install steps in order, with every side effect injectable."""
 
     def __init__(self, env_path=None, public_url=None, yes=False, interactive=None,
-                 tunnel=None, which=None, runner=None, probe=None, sleep=None, out=None,
-                 transport=None, timeout_install=300, timeout_bridge=60, timeout_tunnel=45,
+                 which=None, runner=None, probe=None, sleep=None, out=None,
+                 transport=None, timeout_install=300, timeout_bridge=60,
                  clock=None, doctor_fn=None):
         from .config import default_env_file, load_dotenv
 
@@ -98,7 +95,6 @@ class Setup:
         self.public_url_flag = (public_url or "").rstrip("/")
         self.yes = yes
         self.interactive = (sys.stdin.isatty() if interactive is None else interactive)
-        self.tunnel_choice = tunnel
         self._which = which or shutil.which
         self._runner = runner or subprocess.Popen
         self._probe = probe
@@ -108,11 +104,9 @@ class Setup:
         self._clock = clock or time.time
         self.timeout_install = timeout_install
         self.timeout_bridge = timeout_bridge
-        self.timeout_tunnel = timeout_tunnel
         self._doctor = doctor_fn
         self.env = dict(load_dotenv(self.env_path))
         self.env.update({k: v for k, v in os.environ.items() if k.startswith("LINEAR")})
-        self.tunnel_process = None
         self.bridge_process = None
 
     # ------------------------------------------------------------------ output
@@ -165,62 +159,25 @@ class Setup:
     # ------------------------------------------------------------------- steps
     def step_public_url(self):
         existing = self.public_url_flag or (self.env.get("LINEAR_AGENT_PUBLIC_URL") or "").rstrip("/")
-        if existing:
-            self._write_env({"LINEAR_AGENT_PUBLIC_URL": existing})
-            return DONE, "using %s" % existing
+        if not existing:
+            self.say(PUBLIC_URL_HELP)
+            return NEEDS_INPUT, ("set LINEAR_AGENT_PUBLIC_URL or pass --public-url, then re-run "
+                                 "setup — every later step is skipped until it is set")
 
-        binary = self._tunnel_binary()
-        if not binary:
-            self.say(TUNNEL_HELP)
-            return FAILED, "no public URL set and no tunnel installed (cloudflared or ngrok)"
-
-        port = self.env.get("PORT") or "8650"
+        self._write_env({"LINEAR_AGENT_PUBLIC_URL": existing})
+        health = existing + "/healthz"
+        probe = self._probe or self._default_probe
         try:
-            url, process = self._start_tunnel(binary, port)
-        except SetupError as exc:
-            return FAILED, str(exc)
-        self.tunnel_process = process
-        self._write_env({"LINEAR_AGENT_PUBLIC_URL": url})
-        self.say("  tunnel      %s (quick tunnels hand out a new hostname on every restart)" % url)
-        self.say("  to keep one: cloudflared tunnel create hermes && point its DNS at this host")
-        return DONE, "%s via %s" % (url, os.path.basename(binary))
-
-    def _tunnel_binary(self):
-        if self.tunnel_choice and self._which(self.tunnel_choice):
-            return self._which(self.tunnel_choice)
-        for name in ("cloudflared", "ngrok"):
-            found = self._which(name)
-            if found:
-                return found
-        return None
-
-    def _start_tunnel(self, binary, port):
-        name = os.path.basename(binary)
-        if name.startswith("ngrok"):
-            command = [binary, "http", str(port), "--log=stdout", "--log-format=json"]
-        else:
-            command = [binary, "tunnel", "--url", "http://127.0.0.1:%s" % port]
-        try:
-            # The URL is printed on stderr; a tunnel never exits, so we read until it appears.
-            process = self._runner(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, bufsize=1)
-        except OSError as exc:
-            raise SetupError("could not start %s: %s" % (name, exc))
-        deadline = self._clock() + self.timeout_tunnel
-        stream = getattr(process, "stdout", None)
-        while stream is not None and self._clock() < deadline:
-            line = stream.readline()
-            if not line:
-                break
-            found = TUNNEL_PATTERN.search(line)
-            if found:
-                return found.group(0).rstrip("/"), process
-        try:
-            process.terminate()
-        except Exception:  # noqa: BLE001 - best effort on a failed start
-            pass
-        raise SetupError("%s started but printed no https hostname within %ss"
-                         % (name, self.timeout_tunnel))
+            status, _body = probe(health, 5)
+        except Exception as exc:  # noqa: BLE001 - unreachable is an answer, not a crash
+            return FAILED, "%s did not answer (%s) — is the bridge up and proxied?" % (health, exc)
+        if status == 200:
+            return DONE, "%s answers /healthz" % existing
+        if status in (401, 403):
+            return FAILED, ("%s answered %s — the proxy is blocking it; Linear must be able to "
+                            "reach /healthz" % (health, status))
+        return FAILED, ("%s answered %s — the bridge is not reachable at that address"
+                        % (health, status or "nothing"))
 
     def step_app(self):
         client_id = (self.env.get("LINEAR_CLIENT_ID") or "").strip()

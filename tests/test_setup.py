@@ -172,29 +172,48 @@ class SecretTests(SetupBase):
         self.assertEqual(self.read_env()["LINEAR_WEBHOOK_SECRET"], "b" * 64)
 
 
-class TunnelTests(SetupBase):
-    def test_a_missing_tunnel_stops_with_instructions(self):
-        setup = self.make(which=lambda _name: None)
+class PublicUrlTests(SetupBase):
+    def test_without_a_url_setup_says_what_is_needed_and_stops(self):
+        setup = self.make(probe=lambda url, timeout: (200, b"ok"))
         state, detail = setup.step_public_url()
-        self.assertEqual(state, FAILED)
-        self.assertIn("cloudflared", detail)
-        self.assertIn("brew install cloudflared", self.output.getvalue())
+        self.assertEqual(state, NEEDS_INPUT)
+        self.assertIn("--public-url", detail)
+        printed = self.output.getvalue()
+        self.assertIn("--public-url", printed)
+        # "brew install ..." was the old tunnel advice; setup must not tell anyone to
+        # install a networking binary any more (the repo-wide scan enforces the rest).
+        self.assertNotIn("brew install", printed)
 
-    def test_the_rest_of_the_run_is_skipped_once_the_tunnel_is_missing(self):
-        result = self.make(which=lambda _name: None, doctor_fn=lambda: ([], False)).run()
-        self.assertFalse(result["ok"])
-        states = {step["name"]: step["state"] for step in result["steps"]}
-        self.assertEqual(states["public_url"], FAILED)
-        self.assertEqual(states["webhook"], SKIPPED, "nothing after a hard stop is attempted")
-        self.assertIn("not attempted", result["steps"][-1]["detail"])
-
-    def test_a_given_public_url_skips_the_tunnel_entirely(self):
-        setup = self.make(which=lambda _name: self.fail("should not look for a tunnel"),
-                          public_url="https://mine.example")
+    def test_the_url_is_proven_with_a_probe_before_the_run_goes_on(self):
+        setup = self.make(public_url="https://mine.example",
+                          probe=lambda url, timeout: (200, b"ok"))
         state, detail = setup.step_public_url()
         self.assertEqual(state, DONE)
-        self.assertIn("mine.example", detail)
+        self.assertIn("/healthz", detail)
         self.assertEqual(self.read_env()["LINEAR_AGENT_PUBLIC_URL"], "https://mine.example")
+
+    def test_a_url_that_does_not_answer_fails_on_evidence(self):
+        setup = self.make(public_url="https://mine.example",
+                          probe=lambda url, timeout: (0, b""))
+        state, detail = setup.step_public_url()
+        self.assertEqual(state, FAILED)
+        self.assertIn("healthz", detail)
+
+    def test_a_blocking_proxy_is_named_as_the_problem(self):
+        setup = self.make(public_url="https://mine.example",
+                          probe=lambda url, timeout: (403, b""))
+        state, detail = setup.step_public_url()
+        self.assertEqual(state, FAILED)
+        self.assertIn("403", detail)
+        self.assertIn("Linear must be able to reach", detail)
+
+    def test_a_missing_url_leaves_the_run_resumable(self):
+        result = self.make(probe=lambda url, timeout: (200, b"ok"),
+                           doctor_fn=lambda: ([], False)).run()
+        states = {step["name"]: step["state"] for step in result["steps"]}
+        self.assertEqual(states["public_url"], NEEDS_INPUT)
+        self.assertNotEqual(states["app"], SKIPPED, "a missing URL must not abort the run")
+        self.assertFalse(result["ok"])
 
 
 class ResumeTests(SetupBase):
@@ -251,6 +270,21 @@ class JsonShapeTests(SetupBase):
             self.assertIsInstance(step["detail"], str)
         self.assertTrue(result["ok"])
         json.dumps(result)   # must serialise: the tab reads it as JSON
+
+
+class JsonCliTests(SetupBase):
+    def test_json_mode_prints_only_json(self):
+        """Guidance for humans goes to stderr; stdout has to parse as JSON on its own."""
+        import contextlib
+
+        from linear_hermes.plugin_api import main_for_tests
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            main_for_tests(["setup", "--json", "--yes"])
+        payload = json.loads(stdout.getvalue())      # raises if anything else was printed
+        self.assertEqual(sorted(payload), ["env_file", "ok", "steps"])
+        self.assertIn("--public-url", stderr.getvalue(), "guidance still reaches the human")
 
 
 class NoSecretLeakTests(SetupBase):
