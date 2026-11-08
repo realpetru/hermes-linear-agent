@@ -56,17 +56,27 @@ class SetupBase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.env_path = os.path.join(self.tmp.name, ".env")
+        # Snapshot and clear every LINEAR_* key first, so a value written by one test
+        # cannot change the answer another test gets — and so clearing cannot undo the
+        # token path set below.
+        self._saved_env = {k: v for k, v in os.environ.items() if k.startswith("LINEAR")}
+        self.addCleanup(self._restore_linear_env)
+        for key in list(self._saved_env):
+            os.environ.pop(key, None)
+
         self.token_path = os.path.join(self.tmp.name, TOKEN_KEY)
         os.environ["LINEAR_TOKEN_PATH"] = self.token_path
-        self.addCleanup(os.environ.pop, "LINEAR_TOKEN_PATH", None)
+        self.addCleanup(lambda: os.environ.pop("LINEAR_TOKEN_PATH", None))
         # `setup` remembers its result for the dashboard; keep that out of ~/.hermes
         self._old_home = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = self.tmp.name
         self.addCleanup(self._restore_home)
-        for key in ("LINEAR_AGENT_PUBLIC_URL", "LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET",
-                    "LINEAR_WEBHOOK_SECRET", "PORT"):
-            os.environ.pop(key, None)
         self.output = io.StringIO()
+
+    def _restore_linear_env(self):
+        for key in [k for k in os.environ if k.startswith("LINEAR")]:
+            os.environ.pop(key, None)
+        os.environ.update(self._saved_env)
 
     def _restore_home(self):
         if self._old_home is None:
@@ -100,77 +110,96 @@ class SetupBase(unittest.TestCase):
             )
 
 
-class WebhookTests(SetupBase):
-    def test_a_second_run_does_not_create_a_second_webhook(self):
-        self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test",
-                      LINEAR_WEBHOOK_SECRET="s" * 64,
-                      LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret")
+class WebhookStepTests(SetupBase):
+    """Linear's own API refuses to create an agent-session webhook: this step is a guide."""
+
+    def seed_base(self, **extra):
+        values = dict(LINEAR_AGENT_PUBLIC_URL="https://example.test",
+                      LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret",
+                      LINEAR_STATE_KEY="k" * 64)
+        values.update(extra)
+        self.seed_env(**values)
         self.seed_token()
-        transport = FakeTransport()
 
-        first = self.make(transport=transport)
-        state, detail = first.step_webhook()
-        self.assertEqual(state, DONE, detail)
-        self.assertEqual(len(transport.created), 1)
-
-        second = self.make(transport=transport)
-        state, detail = second.step_webhook()
-        self.assertEqual(state, SKIPPED, detail)
-        self.assertEqual(len(transport.created), 1, "a re-run must not add a second webhook")
-        self.assertIn("already points at", detail)
-
-    def test_the_webhook_uses_the_stored_secret_and_the_public_url(self):
-        self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test",
-                      LINEAR_WEBHOOK_SECRET="a" * 64,
-                      LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret")
-        self.seed_token()
+    def test_it_never_creates_a_webhook(self):
+        self.seed_base()
         transport = FakeTransport()
         self.make(transport=transport).step_webhook()
+        self.assertFalse(
+            any("webhookCreate" in call for call in transport.calls),
+            "webhookCreate rejects AgentSessionEvent; setup must never call it",
+        )
 
-        created = transport.created[0]
-        self.assertEqual(created["url"], "https://example.test/webhook")
-        self.assertEqual(created["secret"], "a" * 64)
-        self.assertEqual(created["resourceTypes"], ["AgentSessionEvent"])
-        self.assertTrue(created["allPublicTeams"])
+    def test_it_prints_the_url_and_the_category_to_paste(self):
+        self.seed_base()
+        setup = self.make(transport=FakeTransport())
+        state, detail = setup.step_webhook()
+        printed = self.output.getvalue()
+        self.assertIn("https://example.test/webhook", printed)
+        self.assertIn("Agent session events", printed)
+        self.assertEqual(state, NEEDS_INPUT)
+        self.assertIn("https://linear.app/settings/api/applications/new", detail)
 
-    def test_a_403_explains_the_scope_problem_instead_of_a_traceback(self):
-        self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test",
-                      LINEAR_WEBHOOK_SECRET="s" * 64,
-                      LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret")
-        self.seed_token()
-        state, detail = self.make(transport=FakeTransport(create_status=403)).step_webhook()
-        self.assertEqual(state, FAILED)
-        self.assertIn("lacks write scope", detail)
-        self.assertIn("Recreate the Linear app with read,write", detail)
+    def test_a_present_signing_secret_is_stored_at_600_and_never_echoed(self):
+        self.seed_base()
+        setup = self.make(transport=FakeTransport(), interactive=True, yes=False)
+        setup._ask = lambda label, secret=False: "linear-signing-secret"
+        state, _detail = setup.step_webhook()
 
-    def test_a_401_listing_webhooks_also_reads_as_a_scope_problem(self):
-        self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test",
-                      LINEAR_WEBHOOK_SECRET="s" * 64,
-                      LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret")
-        self.seed_token()
-        state, detail = self.make(transport=FakeTransport(status=401)).step_webhook()
-        self.assertEqual(state, FAILED)
-        self.assertIn("write scope", detail)
+        self.assertEqual(state, DONE)
+        stored = self.read_env()["LINEAR_WEBHOOK_SECRET"]
+        self.assertEqual(stored, "linear-signing-secret")
+        self.assertEqual(stat.S_IMODE(os.stat(self.env_path).st_mode), 0o600)
+        self.assertNotIn("linear-signing-secret", self.output.getvalue())
+        self.assertNotIn("linear-signing-secret", json.dumps(setup.run()))
+
+    def test_an_empty_answer_asks_again_rather_than_storing_nothing(self):
+        self.seed_base()
+        setup = self.make(transport=FakeTransport(), interactive=True, yes=False)
+        setup._ask = lambda label, secret=False: ""
+        state, detail = setup.step_webhook()
+        self.assertEqual(state, NEEDS_INPUT)
+        self.assertIn("no signing secret given", detail)
+        self.assertNotIn("LINEAR_WEBHOOK_SECRET", self.read_env())
+
+    def test_an_existing_signing_secret_is_skipped(self):
+        self.seed_base(LINEAR_WEBHOOK_SECRET="already-there")
+        state, detail = self.make(transport=FakeTransport()).step_webhook()
+        self.assertEqual(state, SKIPPED)
+        self.assertIn("already stored", detail)
+
+    def test_a_duplicate_webhook_url_is_warned_about(self):
+        self.seed_base()
+        transport = FakeTransport(nodes=[{"id": "1", "url": "https://example.test/webhook",
+                                          "enabled": True}])
+        self.make(transport=transport).step_webhook()
+        self.assertIn("twice", self.output.getvalue())
+
+    def test_a_403_on_the_list_query_only_warns_and_does_not_fail_the_step(self):
+        self.seed_base()
+        state, _detail = self.make(transport=FakeTransport(status=403)).step_webhook()
+        self.assertEqual(state, NEEDS_INPUT, "the read is advisory; the guide still works")
 
 
-class SecretTests(SetupBase):
-    def test_the_generated_secret_is_stored_at_600_and_never_printed(self):
+class StateKeyTests(SetupBase):
+    def test_the_generated_key_signs_the_install_link_not_webhooks(self):
         setup = self.make()
-        state, detail = setup.step_secret()
+        state, detail = setup.step_state_key()
         self.assertEqual(state, DONE)
 
-        secret = self.read_env()["LINEAR_WEBHOOK_SECRET"]
+        secret = self.read_env()["LINEAR_STATE_KEY"]
         self.assertEqual(len(secret), 64, "32 random bytes as hex")
         mode = stat.S_IMODE(os.stat(self.env_path).st_mode)
         self.assertEqual(mode, 0o600)
         self.assertNotIn(secret, self.output.getvalue(), "the secret must never be printed")
         self.assertIn("mode 0600", detail, "the mode is reported in octal, not decimal")
+        self.assertIn("not Linear's signing secret", detail)
 
-    def test_an_existing_secret_is_reused_not_replaced(self):
-        self.seed_env(LINEAR_WEBHOOK_SECRET="b" * 64)
-        state, _detail = self.make().step_secret()
+    def test_an_existing_key_is_reused_not_replaced(self):
+        self.seed_env(LINEAR_STATE_KEY="b" * 64)
+        state, _detail = self.make().step_state_key()
         self.assertEqual(state, SKIPPED)
-        self.assertEqual(self.read_env()["LINEAR_WEBHOOK_SECRET"], "b" * 64)
+        self.assertEqual(self.read_env()["LINEAR_STATE_KEY"], "b" * 64)
 
 
 class PublicUrlTests(SetupBase):
@@ -221,7 +250,8 @@ class ResumeTests(SetupBase):
     def test_a_configured_install_is_reported_as_already_done(self):
         self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test",
                       LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret",
-                      LINEAR_WEBHOOK_SECRET="s" * 64)
+                      LINEAR_STATE_KEY="s" * 64,
+                      LINEAR_WEBHOOK_SECRET="linear-signing")
         self.seed_token()
         transport = FakeTransport(nodes=[{"id": "1", "url": "https://example.test/webhook",
                                           "enabled": True}])
@@ -233,7 +263,7 @@ class ResumeTests(SetupBase):
 
         states = {step["name"]: step["state"] for step in result["steps"]}
         self.assertEqual(states["public_url"], DONE)
-        self.assertEqual(states["secret"], SKIPPED)
+        self.assertEqual(states["state_key"], SKIPPED)
         self.assertEqual(states["app"], DONE)
         self.assertEqual(states["bridge"], SKIPPED)
         self.assertEqual(states["install"], SKIPPED)
@@ -252,7 +282,8 @@ class JsonShapeTests(SetupBase):
     def test_the_checklist_shape_the_dashboard_reads_is_stable(self):
         self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test",
                       LINEAR_CLIENT_ID="cid", LINEAR_CLIENT_SECRET="csecret",
-                      LINEAR_WEBHOOK_SECRET="s" * 64)
+                      LINEAR_STATE_KEY="s" * 64,
+                      LINEAR_WEBHOOK_SECRET="linear-signing")
         self.seed_token()
         result = self.make(
             transport=FakeTransport(),
@@ -263,7 +294,7 @@ class JsonShapeTests(SetupBase):
         self.assertEqual(sorted(result), ["env_file", "ok", "steps"])
         self.assertIsInstance(result["ok"], bool)
         self.assertEqual([s["name"] for s in result["steps"]],
-                         ["public_url", "secret", "app", "bridge", "install", "webhook", "doctor"])
+                         ["public_url", "state_key", "app", "bridge", "install", "webhook", "doctor"])
         allowed = {DONE, SKIPPED, NEEDS_INPUT, FAILED}
         for step in result["steps"]:
             self.assertEqual(sorted(step), ["detail", "name", "state"])
@@ -340,9 +371,9 @@ class DashboardStateTests(unittest.TestCase):
         state = self.plugin_api.setup_state()
         names = [step["name"] for step in state["steps"]]
         self.assertEqual(names,
-                         ["public_url", "secret", "app", "bridge", "install", "webhook"])
+                         ["public_url", "state_key", "app", "bridge", "install", "webhook"])
         self.assertFalse(state["ok"])
-        self.assertEqual({s["state"] for s in state["steps"]}, {"needs_you", "unknown"})
+        self.assertEqual({s["state"] for s in state["steps"]}, {"needs_you"})
 
     def test_a_configured_install_reports_done_steps(self):
         os.environ["LINEAR_AGENT_PUBLIC_URL"] = "https://example.test"

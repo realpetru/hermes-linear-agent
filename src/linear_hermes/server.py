@@ -84,7 +84,7 @@ def make_handler(cfg, on_event):
             state = (query.get("state") or [""])[0]
             from .oauth import verify_state
 
-            if not verify_state(cfg.webhook_secret, state):
+            if not verify_state(cfg.state_key or cfg.webhook_secret, state):
                 log.warning("oauth callback rejected: missing or stale state")
                 return self._html(400, "Install link expired",
                                   "Open the URL from `make authorize` again (links last 15 minutes).")

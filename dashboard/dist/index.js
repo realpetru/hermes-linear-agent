@@ -186,8 +186,10 @@
         : h(
             "p",
             { className: "la-note" },
-            "Run `hermes linear-agent setup` to finish. It is resumable: every step you " +
-              "have already done is skipped."
+            "One command, three values pasted (client id, client secret, and the webhook " +
+              "signing secret Linear generates for the app), one URL pasted into the app, " +
+              "one click to install. Everything else \u2014 bridge start, token exchange, " +
+              "checks \u2014 is automatic."
           )
     );
   }

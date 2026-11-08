@@ -47,6 +47,7 @@ class Config:
     agent_profile: str = ""
     routing: dict = None
     refresh_seconds: float = 5.0
+    state_key: str = ""            # signs the OAuth install link, never Linear's webhook secret
 
     def redacted(self):
         """Safe-to-log view: proves a secret is present without revealing it."""
@@ -183,6 +184,7 @@ def load_config(env=None):
     )
     cfg = Config(
         webhook_secret=_env(env, "LINEAR_WEBHOOK_SECRET", "") or "",
+        state_key=_env(env, "LINEAR_STATE_KEY", "") or "",
         linear_api_key=_env(env, "LINEAR_API_KEY", "") or "",
         hermes_adapter=(_env(env, "HERMES_ADAPTER", "gateway") or "gateway").lower(),
         gateway_url=(_env(env, "HERMES_GATEWAY_URL", "http://127.0.0.1:8642") or "").rstrip("/"),

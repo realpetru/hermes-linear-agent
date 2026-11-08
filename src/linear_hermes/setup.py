@@ -44,18 +44,10 @@ query ExistingWebhooks {
 }
 """
 
-WEBHOOK_CREATE = """
-mutation CreateWebhook($input: WebhookCreateInput!) {
-  webhookCreate(input: $input) {
-    success
-    webhook { id url enabled }
-  }
-}
-"""
-
-# AgentSessionEvent is the only event the bridge acts on. Comment and Issue are
-# deliberately not subscribed: they would arrive, be ignored, and cost Linear quota.
-WEBHOOK_RESOURCES = ["AgentSessionEvent"]
+# An agent's webhook is configured on the Linear app itself: `webhookCreate` rejects
+# AgentSessionEvent for every participant token (verified against the live API). Setup
+# therefore guides the pasting instead of mutating, and only lists webhooks to warn about
+# a duplicate URL — never to create anything.
 
 PUBLIC_URL_HELP = """\
 Linear needs a public HTTPS address it can reach: one for the OAuth callback, one for the
@@ -212,15 +204,20 @@ class Setup:
             self._write_env(updates)
         return DONE, "client id and secret stored in %s" % self.env_path
 
-    def step_secret(self):
-        """The webhook secret doubles as the CSRF state key and the bridge's verifier."""
-        current = (self.env.get("LINEAR_WEBHOOK_SECRET") or "").strip()
+    def step_state_key(self):
+        """A key for signing the OAuth install link. Not Linear's signing secret.
+
+        They are different things and are stored in different variables: this one only
+        proves the callback came back to a link we minted.
+        """
+        current = (self.env.get("LINEAR_STATE_KEY") or "").strip()
         if current:
-            return SKIPPED, "using the existing webhook secret"
-        secret = os.urandom(32).hex()
-        self._write_env({"LINEAR_WEBHOOK_SECRET": secret})
+            return SKIPPED, "install-link key already set"
+        self._write_env({"LINEAR_STATE_KEY": os.urandom(32).hex()})
         mode = _mode_of(self.env_path)
-        return DONE, "generated a 32-byte webhook secret (%s, mode 0%o)" % (self.env_path, mode or 0)
+        return DONE, ("generated a key for signing the install link only "
+                      "(%s, mode 0%o) — this is not Linear's signing secret"
+                      % (self.env_path, mode or 0))
 
     def step_bridge(self):
         port = self.env.get("PORT") or "8650"
@@ -289,7 +286,7 @@ class Setup:
         client_id = (self.env.get("LINEAR_CLIENT_ID") or "").strip()
         if not client_id:
             return NEEDS_INPUT, "no client id yet — finish the app step first"
-        state = make_state((self.env.get("LINEAR_WEBHOOK_SECRET") or "").strip())
+        state = make_state((self.env.get("LINEAR_STATE_KEY") or "").strip())
         url = authorize_url(client_id, self._urls()["redirect_uri"], state=state)
         self.say("")
         self.say("  Install the app in your workspace (as an admin):")
@@ -331,51 +328,57 @@ class Setup:
         return DONE, "app token stored at %s (via the pasted redirect)" % path
 
     def step_webhook(self):
-        path, record = self._token_state()
-        if not record:
-            return NEEDS_INPUT, "no app token yet — finish the install step first"
-        token = str(record.get("access_token") or "")
+        """Point the human at the app's Webhook URL field and store what Linear gives back.
+
+        There is no API for this: an agent's webhook lives in the app's own configuration,
+        and `webhookCreate` refuses AgentSessionEvent. Four things a person must paste are
+        the honest floor, and this is the third.
+        """
         urls = self._urls()
         target = urls["webhook_url"]
         if not target:
             return NEEDS_INPUT, "no public URL — Linear has nowhere to send events"
 
-        status, payload = self._graphql(token, WEBHOOKS_QUERY, {})
-        if status != 200:
-            return FAILED, self._scope_message(status, "list webhooks")
-        existing = ((payload.get("data") or {}).get("webhooks") or {}).get("nodes") or []
-        for node in existing:
-            if str(node.get("url") or "").rstrip("/") == target:
-                return SKIPPED, "a webhook already points at %s" % target
+        existing = (self.env.get("LINEAR_WEBHOOK_SECRET") or "").strip()
+        if existing:
+            return SKIPPED, "Linear's signing secret is already stored in %s" % self.env_path
 
-        secret = (self.env.get("LINEAR_WEBHOOK_SECRET") or "").strip()
+        self.say("")
+        self.say("  In the Linear app, on the same page as the callback URL:")
+        self.say("    Webhook URL     %s" % target)
+        self.say("    Category        Agent session events")
+        self.say("    Signing secret  Linear shows it once — copy it back here")
+        self.say("    %s" % APP_URL)
+        self.say("")
+        self._warn_duplicate_webhook(target)
+
+        if self.yes or not self.interactive:
+            return NEEDS_INPUT, (
+                "paste %s into the app's Webhook URL at %s, pick Agent session events, "
+                "then re-run setup with the signing secret Linear shows" % (target, APP_URL))
+
+        secret = self._ask("Webhook signing secret", secret=True)
         if not secret:
-            return NEEDS_INPUT, "no webhook secret — re-run setup from the top"
+            return NEEDS_INPUT, ("no signing secret given — copy it from %s" % APP_URL)
+        self._write_env({"LINEAR_WEBHOOK_SECRET": secret})
+        mode = _mode_of(self.env_path)
+        return DONE, "signing secret stored (%s, mode 0%o)" % (self.env_path, mode or 0)
 
-        status, payload = self._graphql(token, WEBHOOK_CREATE, {
-            "input": {
-                "url": target,
-                "secret": secret,
-                "resourceTypes": WEBHOOK_RESOURCES,
-                "allPublicTeams": True,
-                "enabled": True,
-                "label": "Hermes agent",
-            }
-        })
+    def _warn_duplicate_webhook(self, target):
+        """If another webhook already posts to this URL, Linear will deliver twice."""
+        _path, record = self._token_state()
+        if not record:
+            return
+        status, payload = self._graphql(str(record.get("access_token") or ""), WEBHOOKS_QUERY, {})
         if status != 200:
-            return FAILED, self._scope_message(status, "create the webhook")
-        data = (payload.get("data") or {}).get("webhookCreate") or {}
-        if data.get("success") is False or not data.get("webhook"):
-            errors = payload.get("errors") or []
-            return FAILED, "Linear refused the webhook: %s" % (errors[:1] or "no reason given")
-        webhook_id = (data.get("webhook") or {}).get("id")
-        return DONE, "created webhook %s -> %s" % (webhook_id, target)
-
-    def _scope_message(self, status, doing):
-        if status in (401, 403):
-            return ("the app token lacks write scope, so it cannot %s. Recreate the Linear app "
-                    "with read,write and re-run setup." % doing)
-        return "Linear returned HTTP %s while trying to %s" % (status, doing)
+            return
+        nodes = ((payload.get("data") or {}).get("webhooks") or {}).get("nodes") or []
+        for node in nodes:
+            if str(node.get("url") or "").rstrip("/") == target:
+                self.say("  note: another webhook already points at %s — with the app's own"
+                         % target)
+                self.say("        webhook you would get every event delivered twice.")
+                return
 
     def step_doctor(self):
         if self._doctor is not None:
@@ -391,7 +394,7 @@ class Setup:
     # -------------------------------------------------------------------- run
     STEPS = (
         ("public_url", "step_public_url"),
-        ("secret", "step_secret"),
+        ("state_key", "step_state_key"),
         ("app", "step_app"),
         ("bridge", "step_bridge"),
         ("install", "step_install"),

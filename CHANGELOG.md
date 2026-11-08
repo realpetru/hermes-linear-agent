@@ -7,10 +7,11 @@ Setup went from five pasted values in four places to **two pastes**.
 * **`hermes linear-agent setup`** walks the whole install: public URL, Linear app, bridge,
   app install, webhook, doctor. It is resumable — each step reports `done`, `skipped`,
   `needs_input` or `failed`, and a second run creates nothing twice.
-* **The webhook creates itself.** `WebhookCreateInput` accepts a caller-supplied `secret`,
-  so the command generates one (32 random bytes, hex), stores it in `.env` at mode 600 and
-  registers the webhook with the app token. The webhook URL and the signing secret are no
-  longer typed anywhere.
+* **The webhook step guides instead of mutating.** `webhookCreate` refuses
+  `AgentSessionEvent` for every participant token (verified against the live API), because
+  an agent's webhook is part of the app's own configuration. Setup prints the Webhook URL
+  and category to paste and stores the signing secret Linear shows. The OAuth install link
+  is signed with its own `LINEAR_STATE_KEY`, so it can never be mistaken for that secret.
 * **The callback URL is printed fully formed**, next to the app-creation link, so it is
   copied rather than composed.
 * **The public URL is verified, not assumed.** Setup takes `--public-url` (or

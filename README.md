@@ -35,10 +35,14 @@ callback URL fully formed so it is copied rather than composed, starts the bridg
 you through installing the app in your workspace, and **creates the webhook itself** with
 a secret it generates.
 
-The honest floor: **two pastes, one click to install, everything else automatic.**
+The honest floor: **one command, three values pasted** (client id, client
+secret, and the webhook signing secret Linear generates for the app), **one URL
+pasted** into the app, **one click** to install. Everything else — bridge start,
+token exchange, checks — is automatic.
 
-* the webhook URL and the signing secret are never typed — the app token creates the
-  webhook, with a secret this command generates and stores at mode 600;
+* setup prints the **Webhook URL** and the category to pick; the signing secret is the
+  one Linear shows when you create the app, and setup stores it at mode 600. Linear has
+  no API for an agent's own webhook, so that paste is the honest floor;
 * the callback URL is printed ready to paste next to the app-creation link;
 * the public URL is the one you already have. **This plugin does not create tunnels**:
   point a reverse proxy, a managed tunnel or a small VPS at the bridge port and pass the
