@@ -31,14 +31,12 @@ jobs:
 
       # The dependencies above are installed in every cell, so a skip here means a test
       # decided it could not run — exactly the kind of green CI that shipped five failures.
+      # One skip is legitimate and stays: the signature test can only run where the
+      # `hermes` package is importable, and CI does not install Hermes itself.
       - name: nothing is skipped
-        run: |
-          if grep -q "skipped=" /tmp/tests.log; then
-            echo "::error::tests were skipped although the full dependency set is installed"
-            grep "skipped=" /tmp/tests.log
-            exit 1
-          fi
-          echo "no skips: the full suite ran"
+        # A skip is a decision, and after the FastAPI half landed CI stayed green while
+        # thirty-six tests never ran there. Only the known environmental skip is allowed.
+        run: python scripts/check_skips.py /tmp/tests.log
 
   validate:
     # `hermes plugins validate` is the catalog gate, but it needs a Hermes install:

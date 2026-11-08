@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.6 — 1.4.5 was red on Python 3.9
+
+* **The dashboard routes annotated `dict | None` and `str | None`.** FastAPI/pydantic evaluate
+  those at import time, and on 3.9 that is a `TypeError` unless `eval_type_backport` happens to
+  be installed — so every dashboard test errored in CI's 3.9 cell while passing on 3.11/3.12.
+  The annotations are now `Optional[str]` / `Optional[Dict[str, Any]]`, which works everywhere.
+* **The skip gate is a script, not a heredoc.** `scripts/check_skips.py` fails CI when a test
+  skips for any reason except the one legitimate environmental skip (the signature test needs
+  the `hermes` package importable, which CI does not install). That gate is what surfaced the
+  3.9 failures instead of letting them hide behind 36 skips.
+* Tested on 3.9.6 with FastAPI installed locally: 373 tests, 1 skip, no failures.
+
 ## 1.4.5 — green where it counts
 
 * **The suite passes with the dashboard installed.** Five tests failed only on an interpreter

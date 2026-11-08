@@ -16,6 +16,7 @@ it, and the router is built only when the host provides FastAPI.
 from __future__ import annotations
 
 import os
+from typing import Any, Dict, Optional
 import sys
 from pathlib import Path
 
@@ -190,7 +191,7 @@ def bridge_url() -> str:
     ).rstrip("/")
 
 
-def bridge_state(url: str | None = None) -> dict:
+def bridge_state(url: Optional[str] = None) -> Dict[str, Any]:
     """Never raises: a dead bridge is a state, not an error."""
     probe = bridge_status(url or bridge_url())
     reachable = bool(probe.get("reachable"))
@@ -204,7 +205,7 @@ def bridge_state(url: str | None = None) -> dict:
     }
 
 
-def build_state(url: str | None = None) -> dict:
+def build_state(url: Optional[str] = None) -> Dict[str, Any]:
     """The single document the page renders from."""
     return {
         "active": active_profile(),
@@ -247,7 +248,7 @@ if router is not None:  # pragma: no cover - exercised through the HTTP tests
         return build_state()
 
     @router.post("/settings")
-    def set_settings(payload: dict | None = None) -> dict:
+    def set_settings(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
             return apply_settings(payload or {})
         except SettingsConflict as exc:
@@ -256,7 +257,7 @@ if router is not None:  # pragma: no cover - exercised through the HTTP tests
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/routing")
-    def set_routing(payload: dict | None = None) -> dict:
+    def set_routing(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         body = payload or {}
         if "routing" not in body:
             raise HTTPException(status_code=400, detail='send {"routing": {"label": "profile"}}')
@@ -266,7 +267,7 @@ if router is not None:  # pragma: no cover - exercised through the HTTP tests
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/agent")
-    def set_agent(payload: dict | None = None) -> dict:
+    def set_agent(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         body = payload or {}
         if "profile" not in body:
             raise HTTPException(status_code=400, detail="send {\"profile\": \"<name>\"}")
