@@ -544,3 +544,36 @@
   .la-grid { grid-template-columns: minmax(0, 1fr); }
   .la-agent-side { display: none; }
 }
+
+/* Install checklist: which parts of the setup are done. */
+.la-setup-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.la-setup-step {
+  display: grid;
+  grid-template-columns: 1.2rem 8rem 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.86rem;
+}
+.la-setup-mark {
+  color: var(--muted-foreground);
+}
+.la-setup-done .la-setup-mark {
+  color: hsl(142 70% 45%);
+}
+.la-setup-needs_you .la-setup-mark {
+  color: hsl(38 92% 55%);
+}
+.la-setup-name {
+  font-variant: small-caps;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+}
+.la-setup-detail {
+  opacity: 0.85;
+}

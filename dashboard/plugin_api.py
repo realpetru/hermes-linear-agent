@@ -24,7 +24,7 @@ _SRC = _ROOT / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from linear_hermes.plugin_api import bridge_status  # noqa: E402  (path set above)
+from linear_hermes.plugin_api import bridge_status, setup_state  # noqa: E402  (path set above)
 from linear_hermes.profiles import ProfileError, available_profiles, validate_profile  # noqa: E402
 from linear_hermes.settings import (  # noqa: E402
     env_shadows_profile,
@@ -214,6 +214,7 @@ def build_state(url: str | None = None) -> dict:
         "env_override": env_shadows_profile(),
         "routing": effective_routing(),
         "routing_from_env": routing_from_env(),
+        "setup": setup_state(),
         "env_routing": routing_from_env(),
     }
 

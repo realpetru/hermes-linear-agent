@@ -23,6 +23,44 @@ and a Hermes run behind it.
                           Linear thread shows: thought → progress → answer
 ```
 
+## One command
+
+```sh
+hermes linear-agent setup
+```
+
+That is the whole install. It finds or starts a public tunnel, asks for the two values
+only you can produce — the Linear app's **client id** and **client secret** — prints the
+callback URL fully formed so it is copied rather than composed, starts the bridge, walks
+you through installing the app in your workspace, and **creates the webhook itself** with
+a secret it generates.
+
+The honest floor: **two pastes, one click to install, everything else automatic.**
+
+* the webhook URL and the signing secret are never typed — the app token creates the
+  webhook, with a secret this command generates and stores at mode 600;
+* the callback URL is printed ready to paste next to the app-creation link;
+* the public URL comes from a tunnel when `cloudflared` or `ngrok` is installed, or from
+  `--public-url https://your.host` if you already have one.
+
+It is **resumable**: every step reports `done`, `skipped`, `needs you` or `FAILED`, and
+re-running it picks up where you stopped. A second run creates nothing twice.
+
+```sh
+hermes linear-agent setup --json     # the same checklist, machine-readable
+hermes linear-agent setup --yes      # never prompt; use only what is already configured
+```
+
+A quick tunnel hands out a new hostname every time it restarts, which breaks the callback
+and the webhook. For anything long-lived use a named tunnel:
+
+```sh
+cloudflared tunnel create hermes
+# then point a DNS name at it and re-run setup with --public-url https://linear.example.com
+```
+
+---
+
 ## Install
 
 About 15 minutes, most of it in Linear's UI. You need **workspace admin** in Linear, a

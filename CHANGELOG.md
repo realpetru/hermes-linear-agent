@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0 — the install is one command
+
+Setup went from five pasted values in four places to **two pastes**.
+
+* **`hermes linear-agent setup`** walks the whole install: public URL, Linear app, bridge,
+  app install, webhook, doctor. It is resumable — each step reports `done`, `skipped`,
+  `needs_input` or `failed`, and a second run creates nothing twice.
+* **The webhook creates itself.** `WebhookCreateInput` accepts a caller-supplied `secret`,
+  so the command generates one (32 random bytes, hex), stores it in `.env` at mode 600 and
+  registers the webhook with the app token. The webhook URL and the signing secret are no
+  longer typed anywhere.
+* **The callback URL is printed fully formed**, next to the app-creation link, so it is
+  copied rather than composed.
+* **The public URL is discovered** by starting `cloudflared` (or `ngrok`) when it is on
+  `PATH`, with the rotation warning and the named-tunnel fix. With neither installed, setup
+  says exactly what to install and stops rather than half-installing.
+* **A 403 from Linear reads as a scope problem** ("recreate the app with read,write"),
+  not a traceback.
+* The dashboard tab shows the same checklist: `GET /state` now carries `setup`, and the
+  page renders which steps are done and which need a human.
+* `--yes` runs without prompting; `--json` emits the checklist for the tab.
+
 ## 1.3.3
 
 `doctor` stopped lying, on the two checks where it lied most.

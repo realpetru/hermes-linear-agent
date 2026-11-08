@@ -150,6 +150,48 @@
     );
   }
 
+  function SetupCard(props) {
+    var setup = props.setup;
+    if (!setup || !setup.steps || !setup.steps.length) {
+      return null;
+    }
+    var pending = setup.steps.filter(function (s) {
+      return s.state !== "done";
+    });
+    var tone = setup.ok ? "ok" : "wait";
+    return h(
+      "div",
+      { className: "la-card la-setup" },
+      h(
+        "div",
+        { className: "la-micro" },
+        setup.ok ? "Install complete" : "Install: " + pending.length + " step(s) left"
+      ),
+      h(
+        "ul",
+        { className: "la-setup-list" },
+        setup.steps.map(function (step) {
+          return h(
+            "li",
+            { key: step.name, className: "la-setup-step la-setup-" + step.state },
+            h("span", { className: "la-setup-mark", "aria-hidden": "true" },
+              step.state === "done" ? "✓" : step.state === "unknown" ? "?" : "•"),
+            h("span", { className: "la-setup-name" }, step.name.replace(/_/g, " ")),
+            h("span", { className: "la-setup-detail" }, step.detail || "")
+          );
+        })
+      ),
+      setup.ok
+        ? null
+        : h(
+            "p",
+            { className: "la-note" },
+            "Run `hermes linear-agent setup` to finish. It is resumable: every step you " +
+              "have already done is skipped."
+          )
+    );
+  }
+
   function ActionBar(props) {
     var tone = props.tone || "idle";
     return h(
@@ -680,6 +722,8 @@
           h(ResolutionCard, { active: activeName })
         )
       ),
+
+      h(SetupCard, { setup: (cur.saved && cur.saved.setup) || null }),
 
       h(ActionBar, {
         tone: f.failed ? "bad" : u.savedFlash && !dirty ? "ok" : "idle",
