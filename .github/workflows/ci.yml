@@ -20,9 +20,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: dependencies the full suite imports
-        # Without these, 36 tests skip and CI is greener than reality: a green CI run once
-        # hid five failures that only appear when the dashboard code can actually import.
-        run: python -m pip install --upgrade pip fastapi uvicorn
+        # httpx is not optional: `fastapi.testclient` imports it, and without it all 36 dashboard
+        # tests skip while the cell still reports OK — a green run that hid five failures.
+        run: python -m pip install --upgrade pip fastapi uvicorn httpx
 
       - name: unit tests
         run: |
