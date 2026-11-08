@@ -268,8 +268,17 @@ class Setup:
         import urllib.error
         import urllib.request
 
+        # Identify ourselves: a CDN bot rule answers the default ``Python-urllib``
+        # agent with 403, which would fail this step on a perfectly good public URL.
+        # Same reason ``doctor`` sends one (1.3.3).
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
+            from .plugin_api import user_agent as _user_agent
+        except Exception:  # noqa: BLE001 - standalone runs without the package
+            _user_agent = lambda: "linear-agent-setup"
+        request = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
+
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:
             return exc.code, b""
