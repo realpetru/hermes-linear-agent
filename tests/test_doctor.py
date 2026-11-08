@@ -33,7 +33,7 @@ class _DoctorBase(object):  # mixin: unittest must not collect it directly
         os.environ["HERMES_GATEWAY_TOKEN"] = "gwtoken"
         self._bridge = plugin_api.bridge_status
         plugin_api.bridge_status = lambda url=None, timeout=3.0, **kw: {
-            "reachable": True, "url": local_endpoints.bridge(), "version": "1.3.2"
+            "reachable": True, "url": local_endpoints.bridge(), "version": plugin_api._version()
         }
 
     def tearDown(self):
@@ -102,7 +102,8 @@ class _DoctorBase(object):  # mixin: unittest must not collect it directly
         self.assertFalse(checks["token"][0])
         self.assertIn("rejected", checks["token"][1])
 
-    def test_offline_linear_does_not_fail_the_token_check(self):
+    def test_offline_linear_leaves_the_token_unverified_and_fails(self):
+        """A token nobody could check is not proof of anything — say so, and fail."""
         self.write_token()
 
         def probe(url, timeout=5, headers=None, data=None, method=None):
@@ -111,8 +112,31 @@ class _DoctorBase(object):  # mixin: unittest must not collect it directly
             return 200, "{}"
 
         checks, ok = self.checks(probe)
-        self.assertTrue(checks["token"][0], checks["token"])
-        self.assertTrue(ok)
+        self.assertFalse(checks["token"][0], checks["token"])
+        self.assertIn("UNVERIFIED", checks["token"][1])
+        self.assertFalse(ok)
+
+    def test_a_token_file_that_is_not_0600_fails(self):
+        self.write_token()
+        os.chmod(self.token_file(), 0o644)
+        checks, ok = self.checks()
+        self.assertFalse(checks["token"][0], checks["token"])
+        self.assertIn("mode 644", checks["token"][1])
+        self.assertFalse(ok)
+
+    def test_a_bridge_running_another_version_fails(self):
+        self.write_token()
+        original = plugin_api.bridge_status
+        plugin_api.bridge_status = lambda url=None, timeout=3.0, **kw: {
+            "reachable": True, "url": local_endpoints.bridge(), "version": "1.3.2"
+        }
+        try:
+            checks, ok = self.checks()
+        finally:
+            plugin_api.bridge_status = original
+        self.assertFalse(checks["bridge"][0], checks["bridge"])
+        self.assertIn("1.3.2", checks["bridge"][1])
+        self.assertFalse(ok)
 
     def test_bad_signature_is_reported_as_such(self):
         self.write_token()
@@ -212,11 +236,15 @@ class DoctorCliTests(_DoctorBase, unittest.TestCase):
 
     def test_status_is_rich_not_just_a_probe(self):
         self.write_token()
-        doc = plugin_api.status_document()
+        def probe(url, timeout=5, headers=None, data=None, method=None):
+            return 200, json.dumps({"data": {"viewer": {"organization": {"name": "Acme"}}}})
+
+        doc = plugin_api.status_document(probe=probe)
         for key in ("credentials", "token", "urls", "bridge", "agent_profile", "version"):
             self.assertIn(key, doc)
         self.assertEqual(doc["token"]["present"], True)
         self.assertEqual(doc["urls"]["webhook_url"], "https://host.example/webhook")
+        self.assertIs(doc["token_valid"], True, "status asks Linear instead of assuming")
 
 
 if __name__ == "__main__":

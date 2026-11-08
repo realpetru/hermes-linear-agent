@@ -40,13 +40,45 @@ def status_info():
 
     info = {"status": "ok", "service": "linear-agent", "version": SERVICE_VERSION}
     info.update(runtime_status.snapshot())
-    info["agent_profile"] = os.environ.get("LINEAR_AGENT_PROFILE", "").strip().lower() or "(gateway default)"
+    profile = os.environ.get("LINEAR_AGENT_PROFILE", "").strip().lower()
+    if not profile:
+        # Settings.json is where `hermes linear-agent agent set` writes, and this line used to
+        # ignore it and report the gateway default.
+        try:
+            from .settings import stored_profile
+
+            profile = stored_profile()
+        except Exception:  # noqa: BLE001 - never break /status over a settings read
+            profile = ""
+    info["agent_profile"] = profile or "(gateway default)"
     info["configured"] = {
         "webhook_secret": bool(os.environ.get("LINEAR_WEBHOOK_SECRET")),
         "client_id": bool(os.environ.get("LINEAR_CLIENT_ID")),
-        "app_token": bool(os.environ.get("LINEAR_TOKEN_PATH")),
+        "app_token": _app_token_ready(),
     }
     return info
+
+
+def _app_token_ready():
+    """True only when a usable app token is on disk.
+
+    It used to report `bool(LINEAR_TOKEN_PATH)` — the variable merely being set counted as
+    configured, which is how a box with no token claimed to have one.
+    """
+    path = (os.environ.get("LINEAR_TOKEN_PATH") or "").strip()
+    if not path:
+        try:
+            from .config import default_data_dir
+
+            path = os.path.join(default_data_dir(), "linear-tokens.json")
+        except Exception:  # noqa: BLE001
+            return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return bool(isinstance(record, dict) and record.get("access_token"))
 
 
 def make_handler(cfg, on_event):

@@ -54,17 +54,36 @@ AUTHORIZE_SCHEMA = {
 }
 
 
+def _config_value(ctx, key):
+    """One value from the plugin's `config_schema`, or "".
+
+    The manifest declares bridge_url, public_url, agent_profile and routing. A settings
+    screen that writes fields nothing reads is worse than no settings screen, so every one
+    of them is consulted below.
+    """
+    if ctx is None:
+        return ""
+    try:
+        settings = ctx.get_config() or {}
+    except Exception:  # noqa: BLE001 - config is best effort
+        return ""
+    if not isinstance(settings, dict):
+        return ""
+    value = settings.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return value
+    return str(value).strip()
+
+
 def _bridge_url(ctx=None):
     env = os.environ.get("LINEAR_AGENT_BRIDGE_URL")
     if env:
         return env.rstrip("/")
-    if ctx is not None:
-        try:
-            settings = ctx.get_config() or {}
-            if isinstance(settings, dict) and settings.get("bridge_url"):
-                return str(settings["bridge_url"]).rstrip("/")
-        except Exception:  # noqa: BLE001 - config is best effort
-            pass
+    configured = _config_value(ctx, "bridge_url")
+    if configured:
+        return str(configured).rstrip("/")
     return DEFAULT_BRIDGE
 
 
@@ -87,21 +106,11 @@ def bridge_status(url=None, timeout=3.0):
         return {"reachable": False, "url": url, "error": "%s: %s" % (type(exc).__name__, exc)}
 
 
-def _active_profile():
-    """env LINEAR_AGENT_PROFILE beats the persisted setting; "" means gateway default."""
-    env = (os.environ.get("LINEAR_AGENT_PROFILE") or "").strip().lower()
-    if env:
-        return env
-    from .settings import stored_profile
-
-    return stored_profile()
-
-
-def _agent_block():
+def _agent_block(ctx=None):
     """Which agent answers, and what else is choosable."""
     from .profiles import ProfileError, available_profiles, validate_profile
 
-    configured = _active_profile()
+    configured = _active_profile(ctx)
     block = {
         "agent_profile": configured or "(gateway default)",
         "available_profiles": available_profiles(),
@@ -114,6 +123,12 @@ def _agent_block():
             block["agent_profile_valid"] = False
             block["agent_profile_error"] = str(exc)
     routing = os.environ.get("LINEAR_AGENT_ROUTING", "").strip()
+    if not routing:
+        configured = _config_value(ctx, "routing")
+        if isinstance(configured, dict) and configured:
+            routing = json.dumps(configured, sort_keys=True)
+        elif isinstance(configured, str):
+            routing = configured
     block["routing"] = routing or "(none)"
     return block
 
@@ -121,7 +136,7 @@ def _agent_block():
 def tool_status(ctx=None, **_kwargs):
     url = _bridge_url(ctx)
     result = bridge_status(url)
-    result.update(_agent_block())
+    result.update(_agent_block(ctx))
     missing = [
         name
         for name in ("LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET", "LINEAR_WEBHOOK_SECRET")
@@ -223,7 +238,12 @@ def _env_view():
 def _urls(ctx=None):
     """The two URLs a user must paste into the Linear app, as the code sees them."""
     env = _env_view()
-    public = (env.get("LINEAR_AGENT_PUBLIC_URL") or read_setting("LINEAR_AGENT_PUBLIC_URL", "") or "").rstrip("/")
+    public = (
+        env.get("LINEAR_AGENT_PUBLIC_URL")
+        or read_setting("LINEAR_AGENT_PUBLIC_URL", "")
+        or str(_config_value(ctx, "public_url") or "")
+        or ""
+    ).rstrip("/")
     redirect = (env.get("LINEAR_REDIRECT_URI") or read_setting("LINEAR_REDIRECT_URI", "") or "") or (
         (public + "/oauth/callback") if public else ""
     )
@@ -259,26 +279,34 @@ def _token_facts():
     return facts
 
 
-def _active_profile():
-    env = os.environ.get("LINEAR_AGENT_PROFILE") or ""
-    if env.strip():
-        return env.strip().lower()
+def _active_profile(ctx=None):
+    """env beats the settings file, which beats the manifest's agent_profile; "" = default."""
+    env = (os.environ.get("LINEAR_AGENT_PROFILE") or "").strip().lower()
+    if env:
+        return env
     try:
         from .settings import stored_profile
 
-        return stored_profile()
+        stored = stored_profile()
     except Exception:  # noqa: BLE001
-        return ""
+        stored = ""
+    return stored or str(_config_value(ctx, "agent_profile") or "").strip().lower()
 
 
-def status_document(url=None):
-    """Everything needed to answer "is this install working?"."""
+def status_document(url=None, probe=None):
+    """Everything needed to answer "is this install working?".
+
+    ``probe`` exists so tests never touch the network; the CLI passes nothing and asks Linear
+    about the token, because reporting "ok" for a token Linear answers 401 to is a lie.
+    """
+    request = probe or _probe
     probe = bridge_status(url)
     missing = [name for name in CREDENTIALS if not _present(name)]
     doc = {
         "service": "linear-agent",
         "version": _version(),
         "status": "degraded" if missing else "ok",
+        "token_valid": None,
         "bridge": probe,
         "credentials": {name: ("set" if _present(name) else "MISSING") for name in CREDENTIALS},
         "missing": missing,
@@ -287,6 +315,18 @@ def status_document(url=None):
         "token": _token_facts(),
         "settings_path": _settings_path_public(),
     }
+    path, record = _token_state()
+    if record and record.get("access_token"):
+        # The audit's point: `status` printed ok for a token Linear answers 401 to. Ask.
+        verdict = _linear_viewer(str(record["access_token"]), request)
+        doc["token_valid"] = verdict is True
+        if verdict is False:
+            doc["status"] = "degraded"
+        if verdict is None:
+            doc["token_unverified"] = "Linear did not answer; the token is present but unproven"
+        elif isinstance(verdict, str):
+            doc["token_error"] = verdict
+            doc["status"] = "degraded"
     if probe.get("reachable"):
         for key in ("sessions_handled", "last_error", "agent_profile"):
             if probe.get(key) not in (None, "", "(gateway default)"):
@@ -379,18 +419,33 @@ def doctor(timeout=5, probe=None):
         checks.append(("token", False, "no app token at %s — run: hermes linear-agent authorize" % path))
     else:
         verdict = _linear_viewer(str(record.get("access_token") or ""), probe)
+        mode = _token_facts()["mode"]
         if verdict is True:
-            mode = _token_facts()["mode"]
-            suffix = "" if mode in ("600", "") else " (mode %s — should be 600)" % mode
-            checks.append(("token", True, "app token valid, refreshes automatically%s" % suffix))
+            if mode not in ("600", ""):
+                checks.append(("token", False,
+                               "app token is valid but the file is mode %s — chmod 600 %s"
+                               % (mode, path)))
+            else:
+                checks.append(("token", True, "app token valid, refreshes automatically"))
         elif verdict is None:
-            checks.append(("token", True, "app token present at %s (Linear not reachable to verify)" % path))
+            # "Could not ask" is not "fine": a token nobody verified is not proof of anything.
+            checks.append(("token", False,
+                           "app token present at %s but Linear did not answer, so it is UNVERIFIED "
+                           "— re-run doctor when the network is back" % path))
         else:
             checks.append(("token", False, verdict))
 
     bridge = bridge_status(None)
     if bridge.get("reachable"):
-        checks.append(("bridge", True, bridge.get("url", "")))
+        running = str(bridge.get("version") or "")
+        expected = _version()
+        if running and running != expected:
+            checks.append(("bridge", False,
+                           "%s is running %s but this plugin is %s — restart the bridge "
+                           "(`hermes linear-agent serve`) so the deployed code matches"
+                           % (bridge.get("url", ""), running, expected)))
+        else:
+            checks.append(("bridge", True, "%s (%s)" % (bridge.get("url", ""), running or "version unknown")))
     else:
         checks.append((
             "bridge",
@@ -427,7 +482,12 @@ def doctor(timeout=5, probe=None):
             ))
 
     if urls["webhook_url"] and secrets["LINEAR_WEBHOOK_SECRET"]:
-        body = b'{"action":"created","type":"AgentSessionEvent","webhookTimestamp":0}'
+        # A real timestamp: with LINEAR_MAX_SKEW_SECONDS>0 the server rejects a zero one, and
+        # doctor then "proved" a webhook that would refuse every delivery.
+        import time as _time
+
+        body = json.dumps({"action": "created", "type": "AgentSessionEvent",
+                           "webhookTimestamp": int(_time.time() * 1000)}).encode("utf-8")
         signature = compute_signature(secrets["LINEAR_WEBHOOK_SECRET"], body)
         status, _body = probe(
             urls["webhook_url"],

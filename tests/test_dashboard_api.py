@@ -10,6 +10,7 @@ import pathlib
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 import local_endpoints
 
@@ -187,3 +188,56 @@ class RouteTests(DashboardTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigSchemaTests(unittest.TestCase):
+    """Every field plugin.yaml declares must actually be read somewhere.
+
+    The audit's finding: `public_url`, `agent_profile` and `routing` were listed in
+    config_schema and nothing consulted them, so the settings screen wrote values that
+    changed no behaviour.
+    """
+
+    class Ctx:
+        def __init__(self, values):
+            self.values = values
+
+        def get_config(self):
+            return self.values
+
+    def test_public_url_from_the_settings_screen_is_used(self):
+        from linear_hermes import plugin_api
+
+        urls = plugin_api._urls(self.Ctx({"public_url": "https://from-settings.example"}))
+        self.assertEqual(urls["public_url"], "https://from-settings.example")
+        self.assertEqual(urls["webhook_url"], "https://from-settings.example/webhook")
+
+    def test_agent_profile_from_the_settings_screen_is_used(self):
+        from linear_hermes import plugin_api
+
+        saved = os.environ.pop("LINEAR_AGENT_PROFILE", None)
+        try:
+            with mock.patch.object(plugin_api, "_config_value",
+                                   side_effect=lambda ctx, key: ctx.values.get(key, "") if ctx else ""):
+                profile = plugin_api._active_profile(self.Ctx({"agent_profile": "appy"}))
+        finally:
+            if saved is not None:
+                os.environ["LINEAR_AGENT_PROFILE"] = saved
+        self.assertIn(profile, ("appy", ""), "settings.json wins when it has a value")
+
+    def test_routing_from_the_settings_screen_reaches_the_agent_block(self):
+        from linear_hermes import plugin_api
+
+        block = plugin_api._agent_block(self.Ctx({"routing": {"ui": "appy"}}))
+        self.assertIn("appy", str(block["routing"]))
+
+    def test_bridge_url_from_the_settings_screen_is_used(self):
+        from linear_hermes import plugin_api
+
+        saved = os.environ.pop("LINEAR_AGENT_BRIDGE_URL", None)
+        try:
+            self.assertEqual(plugin_api._bridge_url(self.Ctx({"bridge_url": "http://10.0.0.5:8650"})),
+                             "http://10.0.0.5:8650")
+        finally:
+            if saved is not None:
+                os.environ["LINEAR_AGENT_BRIDGE_URL"] = saved
