@@ -312,6 +312,13 @@ class Setup:
         self.say("    %s" % url)
         self.say("")
 
+        # Nobody can click in a scripted run, so polling for the callback only blocks:
+        # return the URL at once and let the next invocation pick the token up.
+        if self.yes or not self.interactive:
+            return NEEDS_INPUT, ("open this URL as a workspace admin, then re-run setup to "
+                                 "finish: %s" % url)
+
+        self.say("  Waiting up to %d s for the callback…" % self.timeout_install)
         deadline = self._clock() + self.timeout_install
         while self._clock() < deadline:
             _path, fresh = self._token_state()

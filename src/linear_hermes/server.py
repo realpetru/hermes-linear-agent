@@ -14,7 +14,7 @@ from .signature import HEADER, verify_signature
 
 log = logging.getLogger(__name__)
 
-SERVICE_VERSION = "1.4.2"
+SERVICE_VERSION = "1.4.3"
 MAX_BODY = 1 << 20  # 1 MiB: Linear payloads are far smaller
 
 
@@ -52,7 +52,7 @@ def make_handler(cfg, on_event):
     """on_event(payload, headers) runs in a worker thread after a 200 is sent."""
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "hermes-linear-agent/1.4.2"
+        server_version = "hermes-linear-agent/1.4.3"
 
         def _send(self, code, body):
             raw = json.dumps(body).encode("utf-8")
