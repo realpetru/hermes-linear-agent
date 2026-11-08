@@ -23,6 +23,15 @@ and a Hermes run behind it.
                           Linear thread shows: thought → progress → answer
 ```
 
+## Demo
+
+Create an issue, assign it to Hermes, and the answer lands in the thread authored by the
+agent — this is the whole loop, unedited:
+
+![linear-agent demo: assign an issue, Hermes answers as the app](docs/demo.gif)
+
+The full 61-second recording, 1080p: [docs/demo.mp4](docs/demo.mp4)
+
 ## One command
 
 ```sh
