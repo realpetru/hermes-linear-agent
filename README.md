@@ -126,6 +126,12 @@ message telling the operator to run `authorize`.
 
 ## Dashboard tab
 
+> **The tab appears after the dashboard restarts.** The dashboard caches its plugin list
+> and only invalidates that cache when a plugin *disappears*, so a plugin enabled while the
+> dashboard is already running adds no tab until the process restarts: `s6-svc -r
+> /run/service/dashboard` in the container, or stop and start `hermes dashboard` elsewhere.
+> The plugin works either way — the tab is the UI for a setting the CLI already writes.
+
 The plugin adds a **Linear agent** tab to the Hermes dashboard (after *Skills*): one card
 per profile on the host, the active one marked, and a Save button that writes the same
 `plugin-data/linear-agent/settings.json` that `hermes linear-agent agent set` writes.
