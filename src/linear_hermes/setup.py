@@ -26,6 +26,7 @@ import os
 import shutil
 import stat
 import subprocess
+import tempfile
 import sys
 import time
 
@@ -100,6 +101,8 @@ class Setup:
         self.env = dict(load_dotenv(self.env_path))
         self.env.update({k: v for k, v in os.environ.items() if k.startswith("LINEAR")})
         self.bridge_process = None
+        self.bridge_log = None
+        self._bridge_handle = None
 
     # ------------------------------------------------------------------ output
     def say(self, line=""):
@@ -157,14 +160,26 @@ class Setup:
                                  "setup — every later step is skipped until it is set")
 
         self._write_env({"LINEAR_AGENT_PUBLIC_URL": existing})
-        health = existing + "/healthz"
+        # Collect only. Probing here was the fresh-host dead end: on a machine where the
+        # bridge is not up yet, /healthz cannot answer, step 1 failed, and every later
+        # step — including starting the bridge — was skipped. Reachability is proved by
+        # step_public_check, once there is something to reach.
+        return DONE, "%s stored; reachability is checked once the bridge is up" % existing
+
+    def step_public_check(self):
+        """Prove Linear can reach us: the bridge is running, so go through the public URL."""
+        public = (self.env.get("LINEAR_AGENT_PUBLIC_URL") or "").rstrip("/")
+        if not public:
+            return NEEDS_INPUT, ("no public URL yet — set LINEAR_AGENT_PUBLIC_URL or pass "
+                                 "--public-url, then re-run setup")
+        health = public + "/healthz"
         probe = self._probe or self._default_probe
         try:
             status, _body = probe(health, 5)
         except Exception as exc:  # noqa: BLE001 - unreachable is an answer, not a crash
-            return FAILED, "%s did not answer (%s) — is the bridge up and proxied?" % (health, exc)
+            return FAILED, "%s did not answer (%s) — is the proxy pointing at the bridge?" % (health, exc)
         if status == 200:
-            return DONE, "%s answers /healthz" % existing
+            return DONE, "%s answers /healthz" % public
         if status in (401, 403):
             return FAILED, ("%s answered %s — the proxy is blocking it; Linear must be able to "
                             "reach /healthz" % (health, status))
@@ -243,22 +258,66 @@ class Setup:
                              stderr=subprocess.STDOUT, text=True)
                 started = "docker compose up -d"
             else:
+                # Spawn with THIS plugin's src on the path. `python -m linear_hermes` resolves
+                # the package against the caller's CWD, so from anywhere but the repo root the
+                # child died with ModuleNotFoundError — invisibly, because stderr was DEVNULL.
+                env = self._child_env()
+                env["PYTHONPATH"] = self._plugin_src(env)
+                self.bridge_log = os.path.join(tempfile.gettempdir(), "linear-agent-bridge.log")
+                self._bridge_handle = open(self.bridge_log, "wb")
                 self.bridge_process = self._runner(
                     [sys.executable, "-m", "linear_hermes"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    env=self._child_env(),
+                    stdout=self._bridge_handle, stderr=subprocess.STDOUT,
+                    env=env,
                 )
-                started = "python -m linear_hermes (pid %s)" % getattr(self.bridge_process, "pid", "?")
+                started = "python -m linear_hermes (pid %s, log %s)" % (
+                    getattr(self.bridge_process, "pid", "?"), self.bridge_log)
         except OSError as exc:
             return FAILED, "could not start the bridge: %s" % exc
 
         deadline = self._clock() + self.timeout_bridge
         while self._clock() < deadline:
             if self._health(health):
+                self._close_bridge_log()
                 return DONE, "%s, answering at %s" % (started, health)
+            code = getattr(self.bridge_process, "poll", lambda: None)()
+            if code is not None:
+                # Fail on evidence instead of waiting out the timeout: a child that exits
+                # immediately will never answer, and 60 s of silence taught nobody anything.
+                tail = self._bridge_tail()
+                self._close_bridge_log()
+                return FAILED, ("the bridge exited with code %s before answering%s — log: %s"
+                                % (code, (" — " + tail) if tail else "", self.bridge_log))
             self.sleep(1)
+        self._close_bridge_log()
         return FAILED, ("started %s but %s never answered — check the logs with "
-                        "`docker compose logs` or `hermes linear-agent status`" % (started, health))
+                        "`docker compose logs`, %s or `hermes linear-agent status`"
+                        % (started, health, self.bridge_log or "the service log"))
+
+    def _plugin_src(self, env):
+        """This plugin's own ``src`` directory, ahead of whatever PYTHONPATH was inherited."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        parts = [here] + [p for p in (env.get("PYTHONPATH") or "").split(os.pathsep) if p]
+        return os.pathsep.join(parts)
+
+    def _bridge_tail(self, lines=4):
+        """The end of the child's log, so a failure names its own cause."""
+        if not self.bridge_log:
+            return ""
+        try:
+            with open(self.bridge_log, "rb") as fh:
+                text = fh.read().decode("utf-8", "replace").strip().splitlines()
+        except OSError:
+            return ""
+        return " / ".join(line.strip() for line in text[-lines:] if line.strip())
+
+    def _close_bridge_log(self):
+        if self._bridge_handle is not None:
+            try:
+                self._bridge_handle.close()
+            except Exception:  # noqa: BLE001 - a closed log is not a setup failure
+                pass
+            self._bridge_handle = None
 
     def _child_env(self):
         env = dict(os.environ)
@@ -419,10 +478,13 @@ class Setup:
 
     # -------------------------------------------------------------------- run
     STEPS = (
-        ("public_url", "step_public_url"),
+        ("public_url", "step_public_url"),      # collect the address
         ("state_key", "step_state_key"),
-        ("app", "step_app"),
+        # The bridge needs no Linear credentials: start it before the step that waits for a
+        # human, so a first run leaves something running instead of skipping everything.
         ("bridge", "step_bridge"),
+        ("app", "step_app"),
+        ("public_check", "step_public_check"),  # prove Linear can reach what we just started
         ("install", "step_install"),
         ("webhook", "step_webhook"),
         ("doctor", "step_doctor"),
@@ -431,19 +493,25 @@ class Setup:
     def run(self):
         reports = []
         stopped = None
+        reason = ""
+
         self.say("linear-agent setup")
         for name, method in self.STEPS:
             if stopped:
                 reports.append({"name": name, "state": SKIPPED,
-                                "detail": "not attempted: %s did not finish" % stopped})
+                                "detail": "not attempted: %s %s" % (
+                                    stopped,
+                                    "needs input" if reason == NEEDS_INPUT else "did not finish")})
                 continue
             try:
                 state, detail = getattr(self, method)()
             except Exception as exc:  # noqa: BLE001 - a step must never crash the run
                 state, detail = FAILED, "%s: %s" % (type(exc).__name__, exc)
             reports.append({"name": name, "state": state, "detail": detail})
-            if state == FAILED:
-                stopped = name
+            # `needs_input` is a stop, not a warning: continuing past it used to skip the
+            # bridge start and then report every later step as "not attempted".
+            if state in (FAILED, NEEDS_INPUT):
+                stopped, reason = name, state
         ok = all(r["state"] in (DONE, SKIPPED) for r in reports)
         result = {"ok": ok, "env_file": self.env_path, "steps": reports}
         self._remember(result)

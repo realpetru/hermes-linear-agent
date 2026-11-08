@@ -11,6 +11,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 
@@ -23,6 +24,7 @@ from linear_hermes.setup import (
 )
 
 TOKEN_KEY = "linear-tokens.json"
+ROOT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 
 
 class FakeTransport:
@@ -214,35 +216,47 @@ class PublicUrlTests(SetupBase):
         # install a networking binary any more (the repo-wide scan enforces the rest).
         self.assertNotIn("brew install", printed)
 
-    def test_the_url_is_proven_with_a_probe_before_the_run_goes_on(self):
+    def test_the_url_is_stored_without_probing_anything(self):
+        """Step 1 only records the address; a fresh host has no bridge to answer yet."""
         setup = self.make(public_url="https://mine.example",
-                          probe=lambda url, timeout: (200, b"ok"))
+                          probe=lambda url, timeout: self.fail("step 1 must not probe"))
         state, detail = setup.step_public_url()
         self.assertEqual(state, DONE)
-        self.assertIn("/healthz", detail)
+        self.assertNotIn("/healthz", detail)
         self.assertEqual(self.read_env()["LINEAR_AGENT_PUBLIC_URL"], "https://mine.example")
+
+    def test_the_public_check_proves_it_once_the_bridge_is_up(self):
+        setup = self.make(public_url="https://mine.example",
+                          probe=lambda url, timeout: (200, b"ok"))
+        setup.step_public_url()
+        state, detail = setup.step_public_check()
+        self.assertEqual(state, DONE)
+        self.assertIn("/healthz", detail)
 
     def test_a_url_that_does_not_answer_fails_on_evidence(self):
         setup = self.make(public_url="https://mine.example",
                           probe=lambda url, timeout: (0, b""))
-        state, detail = setup.step_public_url()
+        setup.step_public_url()
+        state, detail = setup.step_public_check()
         self.assertEqual(state, FAILED)
         self.assertIn("healthz", detail)
 
     def test_a_blocking_proxy_is_named_as_the_problem(self):
         setup = self.make(public_url="https://mine.example",
                           probe=lambda url, timeout: (403, b""))
-        state, detail = setup.step_public_url()
+        setup.step_public_url()
+        state, detail = setup.step_public_check()
         self.assertEqual(state, FAILED)
         self.assertIn("403", detail)
         self.assertIn("Linear must be able to reach", detail)
 
-    def test_a_missing_url_leaves_the_run_resumable(self):
+    def test_a_missing_url_stops_the_run_and_says_what_is_needed(self):
         result = self.make(probe=lambda url, timeout: (200, b"ok"),
                            doctor_fn=lambda: ([], False)).run()
-        states = {step["name"]: step["state"] for step in result["steps"]}
-        self.assertEqual(states["public_url"], NEEDS_INPUT)
-        self.assertNotEqual(states["app"], SKIPPED, "a missing URL must not abort the run")
+        steps = {step["name"]: step for step in result["steps"]}
+        self.assertEqual(steps["public_url"]["state"], NEEDS_INPUT)
+        self.assertEqual(steps["bridge"]["state"], SKIPPED)
+        self.assertIn("needs input", steps["bridge"]["detail"])
         self.assertFalse(result["ok"])
 
 
@@ -263,6 +277,7 @@ class ResumeTests(SetupBase):
 
         states = {step["name"]: step["state"] for step in result["steps"]}
         self.assertEqual(states["public_url"], DONE)
+        self.assertEqual(states["public_check"], DONE)
         self.assertEqual(states["state_key"], SKIPPED)
         self.assertEqual(states["app"], DONE)
         self.assertEqual(states["bridge"], SKIPPED)
@@ -294,7 +309,8 @@ class JsonShapeTests(SetupBase):
         self.assertEqual(sorted(result), ["env_file", "ok", "steps"])
         self.assertIsInstance(result["ok"], bool)
         self.assertEqual([s["name"] for s in result["steps"]],
-                         ["public_url", "state_key", "app", "bridge", "install", "webhook", "doctor"])
+                         ["public_url", "state_key", "bridge", "app", "public_check",
+                          "install", "webhook", "doctor"])
         allowed = {DONE, SKIPPED, NEEDS_INPUT, FAILED}
         for step in result["steps"]:
             self.assertEqual(sorted(step), ["detail", "name", "state"])
@@ -399,3 +415,158 @@ class DashboardStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeBridgeProcess:
+    """Stands in for the spawned bridge: alive until told otherwise."""
+
+    def __init__(self, exit_code=None):
+        self.pid = 4242
+        self.returncode = exit_code
+        self.exit_code = exit_code
+
+    def poll(self):
+        return self.exit_code
+
+
+class FreshHostTests(SetupBase):
+    """The first run on a machine that has nothing configured yet.
+
+    The audit's reproduction: `setup` spawned `python -m linear_hermes` from the caller's
+    CWD, the child died with ModuleNotFoundError, stderr went to /dev/null, and setup waited
+    the full timeout before reporting `bridge: failed` and skipping install/webhook/doctor.
+    """
+
+    @staticmethod
+    def probe_for(calls, seen=None):
+        """A probe that answers for the public URL, and for the bridge only once it exists."""
+
+        def probe(url, timeout):
+            if seen is not None:
+                seen.append(("probe", url))
+            if url.startswith("https://"):
+                return (200, b"ok")
+            return (200, b"ok") if calls.get("cmd") else (0, b"")
+
+        return probe
+
+    def start_bridge(self, exit_code=None, health=False, log_text=""):
+        calls = {}
+
+        def runner(cmd, **kwargs):
+            calls["cmd"] = cmd
+            calls["env"] = kwargs.get("env")
+            calls["kwargs"] = kwargs
+            handle = kwargs.get("stdout")
+            if handle is not None and log_text:
+                handle.write(log_text.encode("utf-8"))
+                handle.flush()
+            return FakeBridgeProcess(exit_code)
+
+        setup = self.make(
+            runner=runner,
+            probe=self.probe_for(calls) if health else (lambda url, timeout: (0, b"")),
+            clock=self.clock_factory(),
+        )
+        return setup, calls
+
+    def clock_factory(self):
+        """A clock that only moves when setup sleeps, so timeouts never cost wall time."""
+        state = {"now": 1000.0}
+
+        def clock():
+            return state["now"]
+
+        self._clock_state = state
+        return clock
+
+    def test_the_bridge_is_started_with_the_plugins_own_src_on_the_path(self):
+        setup, calls = self.start_bridge(health=True)
+        setup.sleep = lambda seconds: self._clock_state.__setitem__("now", self._clock_state["now"] + 1)
+        state, detail = setup.step_bridge()
+        self.assertEqual(state, DONE, detail)
+        self.assertEqual(calls["cmd"][-2:], ["-m", "linear_hermes"])
+        src = str(ROOT_SRC)
+        self.assertIn(src, calls["env"]["PYTHONPATH"].split(os.pathsep),
+                      "the child must import this plugin, not the caller's CWD")
+        self.assertEqual(calls["env"]["PYTHONPATH"].split(os.pathsep)[0], src)
+        self.assertIs(calls["kwargs"].get("stderr"), subprocess.STDOUT,
+                      "stderr must be kept, not discarded")
+
+    def test_a_child_that_dies_immediately_fails_fast_with_its_stderr(self):
+        setup, calls = self.start_bridge(
+            exit_code=1, log_text="ModuleNotFoundError: No module named 'linear_hermes'\n")
+        state, detail = setup.step_bridge()
+        self.assertEqual(state, FAILED)
+        self.assertIn("exited with code 1", detail)
+        self.assertIn("ModuleNotFoundError", detail)
+        self.assertIn("linear-agent-bridge.log", detail)
+
+    def test_the_bridge_starts_before_the_public_url_is_probed(self):
+        """The order that made a fresh host fail: probe first, bridge never started."""
+        seen = []
+        calls = {}
+
+        def runner(cmd, **kwargs):
+            calls["cmd"] = cmd
+            seen.append(("spawn", cmd[-1]))
+            return FakeBridgeProcess()
+
+        self._clock_state = {"now": 1000.0}
+        # Seed before constructing: Setup reads the env file once, in __init__.
+        self.seed_env(LINEAR_AGENT_PUBLIC_URL="https://example.test", LINEAR_CLIENT_ID="cid",
+                      LINEAR_CLIENT_SECRET="csecret", LINEAR_STATE_KEY="k" * 64,
+                      LINEAR_WEBHOOK_SECRET="signing")
+        self.seed_token()
+        setup = self.make(
+            runner=runner, probe=self.probe_for(calls, seen), clock=lambda: self._clock_state["now"],
+            doctor_fn=lambda: ([("config", True, "fine")], True),
+            transport=FakeTransport(),
+        )
+        setup.sleep = lambda seconds: self._clock_state.__setitem__("now", self._clock_state["now"] + 1)
+        setup.step_app = lambda: (DONE, "app registered")  # the human part, stubbed
+        result = setup.run()
+        self.assertIn("spawn", [kind for kind, _ in seen], "the bridge must be started")
+        spawn_at = [kind for kind, _ in seen].index("spawn")
+        # The pre-flight health check before the spawn is legitimate (it is how we know a
+        # bridge is already running); what must not happen is the PUBLIC probe coming first.
+        public_at = [url for kind, url in seen if kind == "probe" and url.startswith("https://")]
+        self.assertTrue(public_at, "the public URL must be probed")
+        first_public = [i for i, (kind, url) in enumerate(seen)
+                        if kind == "probe" and url.startswith("https://")][0]
+        self.assertLess(spawn_at, first_public,
+                        "the bridge must be started before the public URL is probed")
+        states = {step["name"]: step["state"] for step in result["steps"]}
+        self.assertEqual(states["bridge"], DONE, [s for s in result["steps"]])
+        self.assertEqual(states["public_check"], DONE)
+
+    def test_a_fresh_host_gets_through_bridge_install_webhook_and_doctor(self):
+        """One run, nothing configured: every step that can run, runs."""
+        self._clock_state = {"now": 1000.0}
+        calls = {}
+
+        def runner(cmd, **kwargs):
+            calls["cmd"] = cmd
+            return FakeBridgeProcess()
+
+        setup = self.make(
+            public_url="https://example.test",
+            runner=runner,
+            probe=self.probe_for(calls),
+            clock=lambda: self._clock_state["now"],
+            transport=FakeTransport(),
+            doctor_fn=lambda: ([("config", True, "fine")], True),
+            interactive=False, yes=True,
+        )
+        setup.sleep = lambda seconds: self._clock_state.__setitem__("now", self._clock_state["now"] + 1)
+        setup.step_app = lambda: (DONE, "app registered")   # the human part, stubbed
+        setup.step_install = lambda: (DONE, "installed")
+        result = setup.run()
+        states = {step["name"]: step["state"] for step in result["steps"]}
+        self.assertEqual(states["bridge"], DONE, [s for s in result["steps"]])
+        self.assertEqual(states["public_check"], DONE)
+        self.assertEqual(states["webhook"], NEEDS_INPUT)
+        # needs_input stops the chain: the run tells you what to paste and where, instead of
+        # pretending the remaining steps were checked.
+        self.assertEqual(states["doctor"], SKIPPED)
+        self.assertIn("needs input", [s for s in result["steps"] if s["name"] == "doctor"][0]["detail"])
