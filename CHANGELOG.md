@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.5 — green where it counts
+
+* **The suite passes with the dashboard installed.** Five tests failed only on an interpreter
+  that has FastAPI: two asserted an empty install while reading this machine's credentials
+  file, one asserted the `python -m` spawn branch from a directory that contained a compose
+  file, and two exchange tests found real client credentials in the checkout's `.env` and
+  failed on the network instead of on the usage check. The readers are now injected, so
+  "unconfigured" is a fact of the test rather than of the host.
+* **CI installs `fastapi` and `uvicorn`.** Thirty-six tests were skipping on every CI run, and
+  that green run was hiding those five failures — the worst kind of green.
+* **`compose_path` is a parameter.** Whether setup runs `docker compose up` or spawns the
+  module used to depend on the caller's working directory.
+* A bridge that answers `503 not_configured` is treated as up, not down: it is running and
+  asking for its secret.
+
 ## 1.4.4 — the release audit's P0s
 
 * **`setup` works on a fresh host.** It spawned `python -m linear_hermes` from the caller's
