@@ -156,7 +156,7 @@ class WebhookTests(SetupBase):
 class SecretTests(SetupBase):
     def test_the_generated_secret_is_stored_at_600_and_never_printed(self):
         setup = self.make()
-        state, _detail = setup.step_secret()
+        state, detail = setup.step_secret()
         self.assertEqual(state, DONE)
 
         secret = self.read_env()["LINEAR_WEBHOOK_SECRET"]
@@ -164,6 +164,7 @@ class SecretTests(SetupBase):
         mode = stat.S_IMODE(os.stat(self.env_path).st_mode)
         self.assertEqual(mode, 0o600)
         self.assertNotIn(secret, self.output.getvalue(), "the secret must never be printed")
+        self.assertIn("mode 0600", detail, "the mode is reported in octal, not decimal")
 
     def test_an_existing_secret_is_reused_not_replaced(self):
         self.seed_env(LINEAR_WEBHOOK_SECRET="b" * 64)

@@ -220,7 +220,7 @@ class Setup:
         secret = os.urandom(32).hex()
         self._write_env({"LINEAR_WEBHOOK_SECRET": secret})
         mode = _mode_of(self.env_path)
-        return DONE, "generated a 32-byte webhook secret (%s, mode %s)" % (self.env_path, mode)
+        return DONE, "generated a 32-byte webhook secret (%s, mode 0%o)" % (self.env_path, mode or 0)
 
     def step_bridge(self):
         port = self.env.get("PORT") or "8650"
