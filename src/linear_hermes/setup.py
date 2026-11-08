@@ -221,9 +221,19 @@ class Setup:
 
     def step_bridge(self):
         port = self.env.get("PORT") or "8650"
-        health = "http://127.0.0.1:%s/healthz" % port
+        # Use the bridge that is configured, not a hardcoded localhost: a containerised
+        # install reaches the bridge on the host (e.g. 172.17.0.1:8650), and a bridge on
+        # another machine is legitimate too. Probing 127.0.0.1 there always fails.
+        base = (self.env.get("LINEAR_AGENT_BRIDGE_URL") or "").rstrip("/") or ("http://127.0.0.1:%s" % port)
+        health = base + "/healthz"
         if self._health(health):
-            return SKIPPED, "already answering at %s" % health
+            return SKIPPED, "already answering at %s" % base
+
+        local = any(base.startswith(p) for p in ("http://127.0.0.1", "http://localhost", "http://[::1]"))
+        if not local:
+            return NEEDS_INPUT, (
+                "the configured bridge (%s) is not answering and it is not on this machine, "
+                "so setup will not try to start it — start it there, then re-run" % base)
 
         compose = os.path.exists("docker-compose.yml")
         docker = self._which("docker")
