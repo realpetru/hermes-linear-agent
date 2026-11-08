@@ -109,9 +109,12 @@ LINEAR_WEBHOOK_SECRET=…
 LINEAR_AGENT_PUBLIC_URL=https://YOUR-PUBLIC-HOST
 ```
 
-A repo `.env` is **not** used by `hermes linear-agent serve`; it exists only for Docker
-Compose and `make dev`. If you use one, its values win over Hermes' — including empty
-ones, so do not leave blank keys for values you set in Hermes.
+Those values go in **one** file, and every command reads it: `$HERMES_HOME/.env` when you
+are inside Hermes (the profile's own `.env`, the one the gateway loads), or `./.env` in a
+standalone checkout. `LINEAR_AGENT_ENV_FILE=/path/to/file` points every command at a different
+file. `setup` writes this file for you at mode 0600; values already exported in your
+environment win over it, including empty ones, so do not leave blank keys for values you set
+elsewhere. Docker Compose and `make dev` read the same file.
 
 `LINEAR_API_KEY` is a development fallback only: activities posted with it appear under
 your own name, which is the bug this project exists to fix. Leave it empty.
@@ -138,9 +141,10 @@ hermes linear-agent exchange "https://YOUR-PUBLIC-HOST/oauth/callback?code=…"
 catalogue install with no repo checkout. Inside a container, the equivalent is
 `python -m linear_hermes.exchange "<redirect URL>"`.
 
-If the callback pages says **"Install link expired"**, the link is older than 15 minutes
-or the bridge restarted with a different webhook secret — re-run `authorize` and use the
-new URL immediately.
+If the callback page says **"Install link expired"**, either the link is older than 15
+minutes, or `LINEAR_STATE_KEY` changed since it was printed — that key is what signs the link
+(`setup` generates one per install, and deleting it invalidates every link already handed
+out). Re-run `authorize` and use the new URL immediately.
 
 ## 5. Verify before you assign anything
 
