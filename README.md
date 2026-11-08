@@ -32,6 +32,29 @@ agent — this is the whole loop, unedited:
 
 The full 61-second recording, 1080p: [docs/demo.mp4](docs/demo.mp4)
 
+## Disclosures
+
+What this plugin does that a user should know before installing:
+
+- **Network calls to a third party.** The bridge talks to Linear (`api.linear.app`) to post
+  agent activities and to read an issue"’"s labels, and to your local Hermes gateway over
+  HTTP (`HERMES_GATEWAY_URL`, default `http://127.0.0.1:8642`) to run the agent.
+- **It exposes a public HTTPS endpoint.** Registering the app gives Linear a URL that reaches
+  `POST /webhook`; the same server answers `GET /healthz`, `GET /oauth/callback` and
+  `GET /status`. The webhook rejects any request whose `Linear-Signature` does not verify.
+- **Credentials it stores.** The Linear app OAuth token goes to `<data dir>/linear-tokens.json`
+  at mode 0600 and is refreshed by the bridge itself; its own configuration lives in `.env`
+  (mode 0600). Secrets are never logged, never echoed, and never printed by `doctor`.
+- **Shell commands.** In gateway mode: none. In the fallback subprocess mode it runs
+  `hermes chat -q` with a minimal environment, so the child never inherits the bridge"’"s secrets.
+- **A long-running background process.** The bridge is a small always-on HTTP service (stdlib
+  only). It runs outside Hermes, typically in Docker or under systemd.
+- **Reads outside its own data.** The issue title, description and labels Linear sends it, and
+  the Hermes profile list, to validate the agent profile you choose.
+- **Identity.** Replies are posted with Linear"’"s `actor=app`, so the author is the app user,
+  not the person who installed it. The personal-`LINEAR_API_KEY` fallback is off unless you set
+  it on purpose, and it logs loudly when used.
+
 ## One command
 
 ```sh
