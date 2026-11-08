@@ -189,6 +189,11 @@ class Setup:
             return FAILED, "%s did not answer (%s) — is the proxy pointing at the bridge?" % (health, exc)
         if status == 200:
             return DONE, "%s answers /healthz" % public
+        if status == 503 and "not_configured" in (
+                _body.decode("utf-8", "replace") if isinstance(_body, bytes) else str(_body)):
+            return FAILED, ("%s/healthz answered 503 not_configured — the bridge is up but has no "
+                            "LINEAR_WEBHOOK_SECRET yet: finish the webhook step, restart the "
+                            "bridge, then re-run" % public)
         if status in (401, 403):
             return FAILED, ("%s answered %s — the proxy is blocking it; Linear must be able to "
                             "reach /healthz" % (health, status))
@@ -250,8 +255,12 @@ class Setup:
         # another machine is legitimate too. Probing 127.0.0.1 there always fails.
         base = (self.env.get("LINEAR_AGENT_BRIDGE_URL") or "").rstrip("/") or ("http://127.0.0.1:%s" % port)
         health = base + "/healthz"
-        if self._health(health):
+        state = self._health(health)
+        if state == "ok":
             return SKIPPED, "already answering at %s" % base
+        if state == "not_configured":
+            return SKIPPED, ("already answering at %s (not configured yet — the webhook step "
+                             "supplies the secret)" % base)
 
         local = any(base.startswith(p) for p in ("http://127.0.0.1", "http://localhost", "http://[::1]"))
         if not local:
@@ -286,9 +295,15 @@ class Setup:
 
         deadline = self._clock() + self.timeout_bridge
         while self._clock() < deadline:
-            if self._health(health):
+            state = self._health(health)
+            if state == "ok":
                 self._close_bridge_log()
                 return DONE, "%s, answering at %s" % (started, health)
+            if state == "not_configured":
+                # Up and honest about what it still needs: keep going, the webhook step is next.
+                self._close_bridge_log()
+                return DONE, ("%s, up at %s — not configured yet (no LINEAR_WEBHOOK_SECRET), "
+                              "which the webhook step supplies" % (started, health))
             code = getattr(self.bridge_process, "poll", lambda: None)()
             if code is not None:
                 # Fail on evidence instead of waiting out the timeout: a child that exits
@@ -334,12 +349,24 @@ class Setup:
         return env
 
     def _health(self, url):
+        """One of "ok", "not_configured" or "down".
+
+        A bridge that answers 503 `not_configured` is UP — it just has no webhook secret yet,
+        and that is exactly the state a fresh install is in at this point. Treating it as
+        "down" made setup fail the bridge step on its own successful start.
+        """
         probe = self._probe or self._default_probe
         try:
-            status, _body = probe(url, 3)
+            status, body = probe(url, 3)
         except Exception:  # noqa: BLE001 - connection refused is the normal first answer
-            return False
-        return status == 200
+            return "down"
+        if status == 200:
+            return "ok"
+        if status == 503:
+            text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+            if "not_configured" in text:
+                return "not_configured"
+        return "down"
 
     @staticmethod
     def _default_probe(url, timeout):
@@ -359,7 +386,9 @@ class Setup:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:
-            return exc.code, b""
+            # Keep the body: a 503 from the bridge carries {"status": "not_configured", ...},
+            # and that JSON is the difference between "down" and "up, missing a secret".
+            return exc.code, exc.read()
         except Exception:  # noqa: BLE001
             return 0, b""
 

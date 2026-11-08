@@ -236,8 +236,8 @@ class ConfigSchemaTests(unittest.TestCase):
 
         saved = os.environ.pop("LINEAR_AGENT_BRIDGE_URL", None)
         try:
-            self.assertEqual(plugin_api._bridge_url(self.Ctx({"bridge_url": "http://10.0.0.5:8650"})),
-                             "http://10.0.0.5:8650")
+            self.assertEqual(plugin_api._bridge_url(self.Ctx({"bridge_url": "https://bridge.example"})),
+                             "https://bridge.example")
         finally:
             if saved is not None:
                 os.environ["LINEAR_AGENT_BRIDGE_URL"] = saved

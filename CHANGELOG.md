@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.4.4 — the release audit's P0s
+
+* **`setup` works on a fresh host.** It spawned `python -m linear_hermes` from the caller's
+  directory (so the child died with `ModuleNotFoundError`, silently) and probed the public URL
+  before any bridge existed. The bridge is now spawned with the plugin's own `src` on
+  `PYTHONPATH`, its stderr is kept and quoted when it exits, and the order is public URL →
+  state key → bridge → app → public check → install → webhook → doctor. `needs_input` stops
+  the chain, as its comment always claimed.
+* **One install-link key.** `authorize` signed the OAuth state with the webhook secret while
+  the server verified `LINEAR_STATE_KEY`, so links died with "Install link expired" straight
+  after a successful setup. Both use the state key now.
+* **One credentials file.** `setup` wrote `./.env` while doctor/status/authorize read the
+  Hermes secret scope: a fresh process reported "missing" with the values one directory away.
+  `$HERMES_HOME/.env` is the file now, read by every command.
+* **`src/linear_hermes/__init__.py` said 0.1.0.** One version everywhere, and
+  `tests/test_release.py` covers the dashboard manifest, the server User-Agent and the package.
+* **Security:** OAuth codes and state no longer reach the log, the callback page escapes what
+  Linear sends it and carries a CSP, credential files are 0600 from creation instead of a
+  moment after, the subprocess adapter passes a minimal environment instead of every bridge
+  secret, and the personal API key fallback is opt-in (`LINEAR_ALLOW_PERSONAL_KEY`) and off.
+* **A missing `LINEAR_WEBHOOK_SECRET` no longer crash-loops the container:** the bridge serves
+  `/healthz` 503 `not_configured` and says what is missing.
+* **`doctor` stopped passing things it had not checked:** an unreachable Linear no longer
+  counts as a valid token, a 0644 token file fails, the bridge's version is compared with the
+  plugin's, and the signed test delivery carries a real timestamp. `status` asks Linear about
+  the token instead of printing `ok`, and `/status` reports whether an app token actually
+  exists and which agent is configured in `settings.json`.
+* **`config_schema` is no longer decoration:** `public_url`, `agent_profile` and `routing` are
+  read wherever they belong.
+
+## 1.4.3 — setup stops blocking for five minutes when nobody can click
+
+`step_install` polled for the OAuth callback for 300 s even in a non-interactive run, where
+nothing can arrive: `--json`, a piped run or an agent driving setup blocked five minutes and
+then reported `needs_input` anyway. It returns at once with the authorize URL in the step
+detail, and interactive runs say how long they will wait.
+
+## 1.4.2 — the bridge probe follows the configuration
+
+`step_bridge` hardcoded localhost. On a containerised install the bridge is reachable only
+at `LINEAR_AGENT_BRIDGE_URL`, so setup probed localhost, found nothing,
+started a second bridge inside the container and then skipped install, webhook and doctor. It
+probes the configured bridge and returns `needs_input` instead of spawning a process it does
+not own.
+
+## 1.4.1 — doctor's probe sends a User-Agent
+
+`setup`'s probe and the signed test delivery sent none, so a CDN bot rule answered **403** and
+step 1 failed on a perfectly good install. Same false negative `doctor` had before 1.3.3; the
+probe reuses `user_agent()` now.
+
 ## 1.4.0 — the install is one command
 
 Setup went from five pasted values in four places to **two pastes**.
