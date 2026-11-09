@@ -105,6 +105,44 @@ def set_stored_routing(mapping):
     return write_settings(values)
 
 
+def stored_public_url():
+    """The public base URL setup remembered, or ""."""
+    return str(read_settings().get("public_url") or "").strip().rstrip("/")
+
+
+def set_stored_public_url(url):
+    values = read_settings()
+    clean = (url or "").strip().rstrip("/")
+    if clean:
+        values["public_url"] = clean
+    else:
+        values.pop("public_url", None)
+    return write_settings(values)
+
+
+def stored_state_key():
+    """The key that signs the OAuth install link, or "".
+
+    It is deliberately not a credential store: it never leaves this 0600 settings file, and
+    it only proves the callback came back to a link this plugin minted.
+    """
+    return str(read_settings().get("state_key") or "").strip()
+
+
+def ensure_state_key():
+    """Return the install-link key, generating and persisting one on first use."""
+    current = stored_state_key()
+    if current:
+        return current
+    value = os.urandom(32).hex()
+    values = read_settings()
+    values["state_key"] = value
+    write_settings(values)
+    return value
+
+
 def env_shadows_profile():
-    """True when an env var would override what `agent set` writes."""
-    return bool((os.environ.get("LINEAR_AGENT_PROFILE") or "").strip())
+    """True when an env value (profile scope or process env) would override `agent set`."""
+    from .secrets import read_setting
+
+    return bool((read_setting("LINEAR_AGENT_PROFILE", "") or "").strip())

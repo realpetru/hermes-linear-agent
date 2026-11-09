@@ -109,37 +109,14 @@ def load_dotenv(path):
 
 
 def credentials_file():
-    """THE place credentials live. One store, chosen the same way every time.
+    """The credentials file the user explicitly named, if any.
 
-    ``setup`` writes here and ``read_setting`` reads here, so a fresh process can never
-    report "credentials missing" while they sit in a file next door — which is exactly what
-    happened when setup wrote ``./.env`` in the caller's directory while doctor, status and
-    authorize read the Hermes secret scope and ``os.environ``.
-
-    Inside Hermes that is the profile's own ``.env`` (``$HERMES_HOME/.env``), the file the
-    gateway loads for this profile. Standalone (``make dev`` in a checkout) it stays ``.env``
-    next to the code, where nothing but a developer looks.
+    Hermes owns the profile ``.env`` and loads it into the secret scope; the plugin never
+    resolves or reads it directly. A standalone deployment either exports its values or
+    names a file with ``LINEAR_AGENT_ENV_FILE``.
     """
     explicit = os.environ.get("LINEAR_AGENT_ENV_FILE")
-    if explicit:
-        return os.path.abspath(explicit)
-    if os.environ.get("HERMES_HOME"):
-        from .settings import hermes_home
-
-        return os.path.join(hermes_home(), ".env")
-    try:
-        import agent.secret_scope  # noqa: F401  - present only inside Hermes
-
-        from .settings import hermes_home
-
-        return os.path.join(hermes_home(), ".env")
-    except Exception:  # noqa: BLE001 - standalone checkout, no Hermes in sight
-        return ".env"
-
-
-def default_env_file():
-    """Backwards-compatible name for the same file; keep one implementation."""
-    return credentials_file()
+    return os.path.abspath(explicit) if explicit else None
 
 
 def _effective_profile(env):
@@ -147,6 +124,8 @@ def _effective_profile(env):
     value = _env(env, "LINEAR_AGENT_PROFILE", "")
     if value:
         return str(value).strip().lower()
+    if env is not None:
+        return ""
     from .settings import stored_profile
 
     return stored_profile()
@@ -185,6 +164,8 @@ def _effective_routing(env):
     raw = _env(env, "LINEAR_AGENT_ROUTING", "")
     if raw:
         return _parse_routing(raw)
+    if env is not None:
+        return {}
     from .settings import read_settings
 
     stored = read_settings().get("routing")
@@ -192,14 +173,13 @@ def _effective_routing(env):
 
 
 def load_config(env=None):
-    if env is None:
-        env = os.environ
-        dotenv = load_dotenv(default_env_file())
-        if dotenv:
-            merged = dict(dotenv)
-            merged.update({k: v for k, v in os.environ.items() if k in dotenv})
-            env = merged
     public_url = (_env(env, "LINEAR_AGENT_PUBLIC_URL", "") or "").rstrip("/")
+    state_key = _env(env, "LINEAR_STATE_KEY", "") or ""
+    if env is None:
+        from .settings import stored_public_url, stored_state_key
+
+        public_url = public_url or stored_public_url()
+        state_key = state_key or stored_state_key()
     # A browser-facing callback: an explicit value, else the public host, and NO
     # fall-back to the internal bridge URL (Linear has never heard of that address).
     redirect = _env(env, "LINEAR_REDIRECT_URI", "") or (
@@ -215,7 +195,7 @@ def load_config(env=None):
     )
     cfg = Config(
         webhook_secret=_env(env, "LINEAR_WEBHOOK_SECRET", "") or "",
-        state_key=_env(env, "LINEAR_STATE_KEY", "") or "",
+        state_key=state_key,
         linear_api_key=_env(env, "LINEAR_API_KEY", "") or "",
         allow_personal_key=str(_env(env, "LINEAR_ALLOW_PERSONAL_KEY", "") or "").strip().lower()
         in ("1", "true", "yes", "on"),

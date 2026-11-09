@@ -17,7 +17,11 @@ an issue to or @mention, rather than a webhook that posts as a human.
 2. **A public HTTPS URL** Linear can POST to. Linear refuses localhost and private
    hosts. A tunnel is fine.
 3. **Credentials in Hermes**, not in files: `LINEAR_CLIENT_ID`,
-   `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET`.
+   `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET`. Store them with
+   `hermes config set LINEAR_CLIENT_ID <value>` (and the other two) or re-run
+   `hermes plugins install realpetru/hermes-linear-agent --force` for masked prompts.
+   The plugin reads them through the profile secret scope; never ask the user to paste
+   secrets into a `.env`, and never read one yourself.
 
 ## Order of operations
 

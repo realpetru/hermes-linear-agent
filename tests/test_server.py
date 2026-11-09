@@ -1,8 +1,12 @@
 import json
+import os
+import sys
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 from linear_hermes.config import Config
 from linear_hermes.server import serve
@@ -128,33 +132,38 @@ class ServerTests(unittest.TestCase):
             self.assertNotIn(leak, body, "anonymous /status leaked %s" % leak)
 
     def test_status_returns_detail_with_the_token(self):
-        import json as _json
-        import os
-
-        os.environ["STATUS_TOKEN"] = "s3cret"
-        try:
+        with mock.patch.dict(os.environ, {"STATUS_TOKEN": "s3cret"}), \
+             mock.patch.dict(sys.modules, {"agent": None, "agent.secret_scope": None}):
             req = urllib.request.Request(local_endpoints.url(self.port, "/status"))
             req.add_header("Authorization", "Bearer s3cret")
             with urllib.request.urlopen(req, timeout=5) as r:
-                body = _json.loads(r.read().decode())
-            self.assertIn("sessions_handled", body)
-            self.assertEqual(body.get("status"), "ok")
-        finally:
-            os.environ.pop("STATUS_TOKEN", None)
+                body = json.loads(r.read().decode())
+        self.assertIn("sessions_handled", body)
+        self.assertEqual(body.get("status"), "ok")
 
     def test_status_rejects_a_wrong_token(self):
-        import json as _json
-        import os
-
-        os.environ["STATUS_TOKEN"] = "s3cret"
-        try:
+        with mock.patch.dict(os.environ, {"STATUS_TOKEN": "s3cret"}), \
+             mock.patch.dict(sys.modules, {"agent": None, "agent.secret_scope": None}):
             req = urllib.request.Request(local_endpoints.url(self.port, "/status"))
             req.add_header("Authorization", "Bearer wrong")
             with urllib.request.urlopen(req, timeout=5) as r:
-                body = _json.loads(r.read().decode())
-            self.assertNotIn("sessions_handled", body)
-        finally:
-            os.environ.pop("STATUS_TOKEN", None)
+                body = json.loads(r.read().decode())
+        self.assertNotIn("sessions_handled", body)
+
+    def test_status_token_can_come_from_the_named_credentials_file(self):
+        """Standalone installs name a file; the token is read through read_setting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "credentials.env")
+            with open(path, "w") as fh:
+                fh.write("STATUS_TOKEN=named-file-token\n")
+            with mock.patch.dict(os.environ, {"LINEAR_AGENT_ENV_FILE": path}), \
+                 mock.patch.dict(sys.modules, {"agent": None, "agent.secret_scope": None}):
+                os.environ.pop("STATUS_TOKEN", None)
+                req = urllib.request.Request(local_endpoints.url(self.port, "/status"))
+                req.add_header("Authorization", "Bearer named-file-token")
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    body = json.loads(r.read().decode())
+        self.assertIn("sessions_handled", body)
 
     def test_health(self):
         with urllib.request.urlopen(local_endpoints.url(self.port, "/healthz"), timeout=5) as r:

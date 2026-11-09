@@ -13,8 +13,10 @@ import logging
 import os
 import pathlib
 import stat
+import sys
 import tempfile
 import threading
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -105,6 +107,14 @@ class CredentialModeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        isolation.apply(self)
+        os.environ["HERMES_HOME"] = self.tmp.name
+        self.addCleanup(lambda: os.environ.pop("HERMES_HOME", None))
+        saved = {k: v for k, v in os.environ.items()
+                 if k.startswith("LINEAR") and k != "LINEAR_AGENT_ENV_FILE"}
+        for key in saved:
+            os.environ.pop(key, None)
+        self.addCleanup(lambda: os.environ.update(saved))
 
     def test_the_token_file_is_0600_from_the_first_byte(self):
         path = os.path.join(self.tmp.name, "tokens.json")
@@ -121,17 +131,74 @@ class CredentialModeTests(unittest.TestCase):
                 save_tokens(path, {"access_token": "tok"})
         self.assertEqual(os.listdir(self.tmp.name), [], "the temp file must be removed")
 
-    def test_the_env_file_is_0600_and_written_atomically(self):
+    def test_setup_never_writes_a_credentials_file(self):
         from linear_hermes.setup import Setup
 
-        # Setup mirrors what it writes into os.environ; keep that out of the other tests.
-        saved = dict(os.environ)
-        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
         env_path = os.path.join(self.tmp.name, ".env")
         setup = Setup(env_path=env_path, interactive=False, yes=True, out=lambda line="": None)
-        setup._write_env({"LINEAR_STATE_KEY": "k" * 64})
-        self.assertEqual(stat.S_IMODE(os.stat(env_path).st_mode), 0o600)
-        self.assertEqual([n for n in os.listdir(self.tmp.name) if n.startswith(".env.")], [])
+        setup.run()
+        self.assertFalse(os.path.exists(env_path),
+                         "Hermes owns the profile; setup only prints `hermes config set`")
+        self.assertEqual([n for n in os.listdir(self.tmp.name) if n.startswith(".env")], [])
+
+    def test_the_settings_file_is_0600_from_the_first_byte(self):
+        from linear_hermes.settings import write_settings
+
+        path = write_settings({"state_key": "k" * 64}, path=os.path.join(self.tmp.name, "settings.json"))
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        self.assertEqual([n for n in os.listdir(self.tmp.name) if n.endswith(".tmp")], [],
+                         "no temporary file is left behind")
+
+
+class SecretScopeTests(unittest.TestCase):
+    """Catalog rule 11: secrets come from Hermes' profile scope, never a stray file/env."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        isolation.apply(self)
+
+    @staticmethod
+    def fake_scope(values):
+        scope = types.ModuleType("agent.secret_scope")
+        scope.get_secret = lambda name, default=None: values.get(name, default)
+        agent = types.ModuleType("agent")
+        agent.secret_scope = scope
+        return {"agent": agent, "agent.secret_scope": scope}
+
+    def test_the_profile_scope_wins_over_the_process_environment(self):
+        from linear_hermes.secrets import read_setting
+
+        with mock.patch.dict(sys.modules, self.fake_scope({"LINEAR_CLIENT_SECRET": "from-scope"})), \
+             mock.patch.dict(os.environ, {"LINEAR_CLIENT_SECRET": "from-env"}):
+            self.assertEqual(read_setting("LINEAR_CLIENT_SECRET"), "from-scope")
+
+    def test_a_missing_secret_fails_closed_instead_of_borrowing_the_environment(self):
+        from linear_hermes.secrets import read_setting
+
+        with mock.patch.dict(sys.modules, self.fake_scope({})), \
+             mock.patch.dict(os.environ, {"LINEAR_WEBHOOK_SECRET": "from-env",
+                                          "STATUS_TOKEN": "from-env"}):
+            self.assertEqual(read_setting("LINEAR_WEBHOOK_SECRET", "default"), "default")
+            self.assertEqual(read_setting("STATUS_TOKEN", "default"), "default")
+
+    def test_operational_settings_still_come_from_the_environment(self):
+        from linear_hermes.secrets import read_setting
+
+        with mock.patch.dict(sys.modules, self.fake_scope({})), \
+             mock.patch.dict(os.environ, {"PORT": "9999"}):
+            self.assertEqual(read_setting("PORT"), "9999")
+
+    def test_hermes_home_dotenv_is_never_read(self):
+        from linear_hermes.secrets import read_setting
+
+        home = os.path.join(self.tmp.name, "hermes-home")
+        os.makedirs(home)
+        with open(os.path.join(home, ".env"), "w") as fh:
+            fh.write("LINEAR_WEBHOOK_SECRET=from-hermes-home\n")
+        with mock.patch.dict(os.environ, {"HERMES_HOME": home}), \
+             mock.patch.dict(sys.modules, self.fake_scope({})):
+            self.assertIsNone(read_setting("LINEAR_WEBHOOK_SECRET"))
 
 
 class SubprocessEnvironmentTests(unittest.TestCase):

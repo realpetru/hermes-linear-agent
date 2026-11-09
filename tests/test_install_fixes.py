@@ -106,10 +106,10 @@ class UrlTests(HomeTestCase):
 
 class ExchangeEnvTests(HomeTestCase):
     def test_exchange_reads_the_credentials_file(self):
-        """The documented fallback must load the credentials file, not only os.environ.
+        """The standalone path must read the file the user named, not only os.environ.
 
-        `credentials_file()` is $LINEAR_AGENT_ENV_FILE when set, else the Hermes profile
-        .env, else ./.env in a standalone checkout — one store for setup, doctor and this.
+        ``credentials_file()`` is ``$LINEAR_AGENT_ENV_FILE`` when set, else None; there is
+        no implicit ``$HERMES_HOME/.env`` or ``./.env`` lookup any more.
         """
         work = tempfile.mkdtemp()
         credentials = pathlib.Path(work, ".env")

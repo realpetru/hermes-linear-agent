@@ -43,8 +43,11 @@ What this plugin does that a user should know before installing:
   `POST /webhook`; the same server answers `GET /healthz`, `GET /oauth/callback` and
   `GET /status`. The webhook rejects any request whose `Linear-Signature` does not verify.
 - **Credentials it stores.** The Linear app OAuth token goes to `<data dir>/linear-tokens.json`
-  at mode 0600 and is refreshed by the bridge itself; its own configuration lives in `.env`
-  (mode 0600). Secrets are never logged, never echoed, and never printed by `doctor`.
+  at mode 0600 and is refreshed by the bridge itself. The three Linear credentials are
+  Hermes' profile secrets, read through `agent.secret_scope`; the plugin never opens
+  `.env` or another credential file. Only the non-secret public URL and the install-link
+  key live in the plugin's own `settings.json` (mode 0600). Secrets are never logged,
+  never echoed, and never printed by `doctor`.
 - **Shell commands.** In gateway mode: none. In the fallback subprocess mode it runs
   `hermes chat -q` with a minimal environment, so the child never inherits the bridge’s secrets.
 - **A long-running background process.** The bridge is a small always-on HTTP service (stdlib
@@ -61,10 +64,13 @@ What this plugin does that a user should know before installing:
 hermes linear-agent setup
 ```
 
-That is the whole install. It starts the bridge (or finds the one already running), asks for
-the two values only you can produce — the Linear app's **client id** and **client secret** —
-prints the callback URL fully formed so it is copied rather than composed, checks that Linear
+That is the whole install. It starts the bridge (or finds the one already running), prints
+the callback URL fully formed so it is copied rather than composed, checks that Linear
 can reach the public URL, and walks you through installing the app in your workspace.
+
+Setup never stores a secret. The two app values and the webhook signing secret go through
+Hermes: it prints the exact `hermes config set KEY <value>` lines, or you re-run
+`hermes plugins install realpetru/hermes-linear-agent --force` for masked prompts.
 
 It starts **no tunnel** and it **creates no webhook**: Linear's API refuses to create an
 agent-session webhook for any participant token, so those two things are yours, and the step
@@ -75,9 +81,10 @@ secret, and the webhook signing secret Linear generates for the app), **one URL
 pasted** into the app, **one click** to install. Everything else — bridge start,
 token exchange, checks — is automatic.
 
-* setup prints the **Webhook URL** and the category to pick; the signing secret is the
-  one Linear shows when you create the app, and setup stores it at mode 600. Linear has
-  no API for an agent's own webhook, so that paste is the honest floor;
+* setup prints the **Webhook URL** and the category to pick, then the line
+  `hermes config set LINEAR_WEBHOOK_SECRET <value>`. Linear shows the signing secret once,
+  when you add the webhook; Hermes stores it in the profile. Linear has no API for an
+  agent's own webhook, so that paste is the honest floor;
 * the callback URL is printed ready to paste next to the app-creation link;
 * the public URL is the one you already have. **This plugin does not create tunnels**:
   point a reverse proxy, a managed tunnel or a small VPS at the bridge port and pass the
@@ -143,9 +150,10 @@ hermes plugins install realpetru/hermes-linear-agent
 hermes plugins enable linear-agent
 ```
 
-The installer prompts for the three values from step 2 and stores them in Hermes. If you
-skip a prompt, add it to `$(hermes config env-path)` later — that is the only credential
-store this path uses.
+The installer prompts for the three values from step 2 and stores them in the Hermes
+profile. If you skip a prompt, store each one later with `hermes config set
+LINEAR_CLIENT_ID <value>` (and `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET`); inside
+Hermes the plugin reads them through the profile secret scope.
 
 ### 4. Run the bridge, then install the app
 
@@ -302,11 +310,13 @@ means. Several profiles are several brains behind one Linear identity.
 - **Concurrency cap** with a fixed slot pool; over-capacity sessions get a message in
   the thread instead of a queue that silently never drains. Stale slots are swept so a
   crashed worker cannot cap the service forever.
-- **Secrets live where Hermes already reads them.** `setup` writes the credentials file —
-  the Hermes profile's own `.env` (`$HERMES_HOME/.env`) inside Hermes, or `./.env` in a
-  standalone checkout — at mode 0600, and `doctor`, `status`, `authorize`, `exchange` and the
-  bridge all read that one file. `LINEAR_AGENT_ENV_FILE` points them elsewhere if you want.
-  Startup logs print `set`/`MISSING`, never a value.
+- **Secrets live where Hermes already reads them.** Inside Hermes the three credentials
+  come from the profile secret scope (`agent.secret_scope.get_secret`); the plugin never
+  opens `.env`, `auth.json`, or another credential store. Standalone, it uses the process
+  environment, then only the file named by `LINEAR_AGENT_ENV_FILE`. Setup writes no
+  credentials at all — it prints `hermes config set …` lines instead. Only the public URL
+  and the install-link key (neither a Linear credential) go in the plugin data dir, mode
+  0600. Startup logs print `set`/`MISSING`, never a value.
 - **Honest limitation:** `LINEAR_API_KEY` is a development fallback and it is **off by
   default**. With `LINEAR_ALLOW_PERSONAL_KEY` unset the key is ignored, and the bridge says
   so in one loud line at startup instead of quietly changing identity; with it set, activities
@@ -322,9 +332,9 @@ means. Several profiles are several brains behind one Linear identity.
 | `LINEAR_WEBHOOK_SECRET` | yes | webhook signing secret |
 | `LINEAR_AGENT_PUBLIC_URL` | for a real install | public HTTPS base URL (builds the authorize URL only) |
 | `LINEAR_REDIRECT_URI` | must match the app | exact callback URL sent in the authorize request **and** the token exchange; a mismatch is the usual `redirect_uri` install failure |
-| `LINEAR_STATE_KEY` | generated by `setup` | signs the OAuth install link; the callback verifies it (falls back to `LINEAR_WEBHOOK_SECRET` only if unset) |
+| `LINEAR_STATE_KEY` | generated by `setup` | signs the OAuth install link; the callback verifies it (falls back to `LINEAR_WEBHOOK_SECRET` only if unset). `setup` keeps it in the plugin data dir, mode 0600 |
 | `LINEAR_TOKEN_PATH` | no | where the app token is stored; default `linear-tokens.json` in the plugin data dir (`$HERMES_HOME/plugin-data/linear-agent/`), absolute on purpose, mode 0600 |
-| `LINEAR_AGENT_ENV_FILE` | no | the credentials file, when you do not want the default (`$HERMES_HOME/.env`, or `./.env` standalone) |
+| `LINEAR_AGENT_ENV_FILE` | no, standalone only | the one credentials file the plugin reads when you name it. Inside Hermes, values come from the profile secret scope and this is ignored |
 | `LINEAR_API_KEY` | no, discouraged | personal-key fallback, **ignored unless `LINEAR_ALLOW_PERSONAL_KEY=1`**; posts under a human identity — see the limitation note |
 | `LINEAR_ALLOW_PERSONAL_KEY` | no | opt in to the personal-key fallback. Debugging only |
 | `LINEAR_AGENT_BRIDGE_URL` | no | default `http://127.0.0.1:8650` |
@@ -347,7 +357,7 @@ public URL returns nothing.
 
 | What you see | Do this |
 |---|---|
-| `serve` prints `linear-agent is not configured yet` | add the three credentials to `$(hermes config env-path)` (or re-run `plugins install --force`) |
+| `serve` prints `linear-agent is not configured yet` | store the three credentials with `hermes config set LINEAR_CLIENT_ID <value>` (and `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET`), or re-run `plugins install --force` |
 | Linear shows nothing and the log has no `POST /webhook` | Linear cannot reach you: check `$LINEAR_AGENT_PUBLIC_URL/healthz` from outside, and the webhook URL in the app |
 | Log: `rejected webhook: bad signature` | the webhook secret is not this webhook's secret — copy it again, then `hermes linear-agent doctor` |
 | Log: `event ignored: not_agent_session` | tick **Agent session events**, and delegate the issue instead of assigning it |

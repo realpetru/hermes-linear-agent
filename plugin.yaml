@@ -1,7 +1,7 @@
 name: linear-agent
 label: Linear Agent
 kind: standalone
-version: 1.4.6
+version: 1.5.0
 author: realpetru
 homepage: https://github.com/realpetru/hermes-linear-agent
 description: >
@@ -57,6 +57,11 @@ optional_env:
   - name: HERMES_GATEWAY_TOKEN
     description: "Hermes API server key the bridge uses to start runs (Bearer token)"
     prompt: "Hermes API server key"
+    password: true
+  - name: STATUS_TOKEN
+    description: "Optional bearer token that protects the bridge's /status endpoint"
+    prompt: "Status endpoint token (optional)"
+    secret: true
     password: true
 config_schema:
   agent_profile:

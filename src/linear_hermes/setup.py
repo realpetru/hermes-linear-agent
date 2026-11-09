@@ -7,17 +7,22 @@ for as little as possible, and can be re-run at any point: every step reports ``
 
 What it removes:
 
-* the **webhook URL** and the **signing secret** are no longer typed anywhere — the app
-  token creates the webhook itself, with a secret this command generates (Linear's
-  ``WebhookCreateInput`` accepts a caller-supplied ``secret``);
 * the **callback URL** is printed fully formed next to the app-creation link, so it is
   copied rather than composed;
 * the **public URL** is whatever the operator already runs — a reverse proxy, a named
-  tunnel, a small VPS — and setup proves it answers before going on.
+  tunnel, a small VPS — and setup proves it answers before going on;
+* the **install-link key** is generated on first run and kept in the plugin's own 0600
+  settings, so nobody invents or stores one by hand.
 
-Two pastes remain, both unavoidable: the Linear app's client id and client secret.
+What remains is the honest floor: Linear gives an app no API to create its own agent
+webhook (``webhookCreate`` refuses ``AgentSessionEvent``), so the Webhook URL, the category
+and the signing secret are pasted into the app page by a person. Setup prints the URL and
+the exact ``hermes config set LINEAR_WEBHOOK_SECRET <value>`` line; it never stores a secret.
 
-Nothing here prints a secret. Values are written to ``.env`` at mode 0600.
+Nothing here prints a secret, and nothing here writes one. The three declared secrets live in
+the Hermes profile, which owns its ``.env`` and loads it into the secret scope; setup reads
+them through ``agent.secret_scope``. Only the install-link key and the public URL — neither a
+Linear credential — are stored in the plugin's own 0600 data directory.
 """
 from __future__ import annotations
 
@@ -26,7 +31,6 @@ import os
 import shutil
 import stat
 import subprocess
-import tempfile
 import sys
 import time
 
@@ -59,9 +63,26 @@ address in:
 
   hermes linear-agent setup --public-url https://linear.example.com
 
-Or set LINEAR_AGENT_PUBLIC_URL in .env. A reverse proxy, a managed tunnel, or a small
-VPS all work; whatever you already run is fine.
+Setup remembers it in the plugin's own 0600 settings file.
 """
+
+# Everything setup reads. Secrets come from Hermes' profile scope; operational values keep
+# their process-environment fallback. Nothing is ever written back to a .env file.
+SETUP_KEYS = (
+    "LINEAR_AGENT_PUBLIC_URL",
+    "LINEAR_REDIRECT_URI",
+    "LINEAR_AGENT_BRIDGE_URL",
+    "LINEAR_CLIENT_ID",
+    "LINEAR_CLIENT_SECRET",
+    "LINEAR_STATE_KEY",
+    "LINEAR_WEBHOOK_SECRET",
+    "LINEAR_TOKEN_PATH",
+    "LINEAR_API_KEY",
+    "HERMES_GATEWAY_TOKEN",
+    "STATUS_TOKEN",
+    "PORT",
+    "BIND",
+)
 
 
 class SetupError(RuntimeError):
@@ -82,9 +103,12 @@ class Setup:
                  which=None, runner=None, probe=None, sleep=None, out=None,
                  transport=None, timeout_install=300, timeout_bridge=60,
                  clock=None, doctor_fn=None, compose_path=None):
-        from .config import default_env_file, load_dotenv
+        from .config import load_dotenv
+        from .secrets import read_setting
 
-        self.env_path = env_path or default_env_file()
+        # Read-only, and only when the caller names it (tests, a standalone operator).
+        # Secrets are never written here: inside Hermes the profile owns them.
+        self.env_path = env_path
         self.public_url_flag = (public_url or "").rstrip("/")
         self.yes = yes
         self.interactive = (sys.stdin.isatty() if interactive is None else interactive)
@@ -98,8 +122,13 @@ class Setup:
         self.timeout_install = timeout_install
         self.timeout_bridge = timeout_bridge
         self._doctor = doctor_fn
-        self.env = dict(load_dotenv(self.env_path))
-        self.env.update({k: v for k, v in os.environ.items() if k.startswith("LINEAR")})
+        self.env = {}
+        if self.env_path:
+            self.env.update(load_dotenv(self.env_path))
+        for name in SETUP_KEYS:
+            value = read_setting(name)
+            if value is not None:
+                self.env[name] = value
         self.bridge_process = None
         self.bridge_log = None
         self._bridge_handle = None
@@ -112,46 +141,6 @@ class Setup:
     # ------------------------------------------------------------------ output
     def say(self, line=""):
         self.out(line)
-
-    def _write_env(self, updates):
-        """Merge keys into .env atomically, at 0600. Values are never echoed."""
-        lines = []
-        if os.path.exists(self.env_path):
-            with open(self.env_path) as fh:
-                lines = fh.read().splitlines()
-        seen = set()
-        merged = []
-        for line in lines:
-            stripped = line.strip()
-            key = stripped.split("=", 1)[0].strip() if "=" in stripped and not stripped.startswith("#") else None
-            if key in updates:
-                merged.append("%s=%s" % (key, updates[key]))
-                seen.add(key)
-            else:
-                merged.append(line)
-        for key, value in updates.items():
-            if key not in seen:
-                merged.append("%s=%s" % (key, value))
-        directory = os.path.dirname(os.path.abspath(self.env_path))
-        os.makedirs(directory, exist_ok=True)
-        # mkstemp creates the file 0600 before any byte of a secret lands in it: the old
-        # write-then-chmod order had a window, and a crash inside it left 0644 behind.
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".env.", text=True)
-        try:
-            with os.fdopen(fd, "w") as fh:
-                os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-                fh.write("\n".join(merged).rstrip() + "\n")
-            os.replace(tmp, self.env_path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        self.env.update(updates)
-        for key, value in updates.items():
-            os.environ[key] = value
-        return sorted(updates)
 
     def _ask(self, label, secret=False):
         if self.yes or not self.interactive:
@@ -167,18 +156,28 @@ class Setup:
 
     # ------------------------------------------------------------------- steps
     def step_public_url(self):
-        existing = self.public_url_flag or (self.env.get("LINEAR_AGENT_PUBLIC_URL") or "").rstrip("/")
+        from .settings import set_stored_public_url, stored_public_url
+
+        existing = (
+            self.public_url_flag
+            or (self.env.get("LINEAR_AGENT_PUBLIC_URL") or "").rstrip("/")
+            or stored_public_url()
+        )
         if not existing:
             self.say(PUBLIC_URL_HELP)
             return NEEDS_INPUT, ("set LINEAR_AGENT_PUBLIC_URL or pass --public-url, then re-run "
                                  "setup — every later step is skipped until it is set")
 
-        self._write_env({"LINEAR_AGENT_PUBLIC_URL": existing})
+        try:
+            set_stored_public_url(existing)
+        except OSError as exc:
+            return FAILED, "could not save the public URL: %s" % (exc.strerror or exc)
+        self.env["LINEAR_AGENT_PUBLIC_URL"] = existing
         # Collect only. Probing here was the fresh-host dead end: on a machine where the
         # bridge is not up yet, /healthz cannot answer, step 1 failed, and every later
         # step — including starting the bridge — was skipped. Reachability is proved by
         # step_public_check, once there is something to reach.
-        return DONE, "%s stored; reachability is checked once the bridge is up" % existing
+        return DONE, "%s stored in the plugin settings; reachability is checked once the bridge is up" % existing
 
     def step_public_check(self):
         """Prove Linear can reach us: the bridge is running, so go through the public URL."""
@@ -210,48 +209,48 @@ class Setup:
         client_secret = (self.env.get("LINEAR_CLIENT_SECRET") or "").strip()
         urls = self._urls()
         if client_id and client_secret:
-            return DONE, "client id and secret already set"
+            return DONE, "client id and secret are set in the Hermes profile"
 
         self.say("")
-        self.say("  Create the Linear app (one click, then paste two values back here):")
+        self.say("  Create the Linear app, then store its two values through Hermes:")
         self.say("    %s" % APP_URL)
         self.say("")
         self.say("    Callback URL   %s" % (urls["redirect_uri"] or "(set a public URL first)"))
         self.say("    Scopes         read, write, app:assignable, app:mentionable")
         self.say("    Webhooks       Agent session events")
         self.say("")
-        if not self.interactive or self.yes:
-            return NEEDS_INPUT, "create the app at %s, then re-run setup" % APP_URL
-
-        updates = {}
-        if not client_id:
-            client_id = self._ask("Client ID")
-            if not client_id:
-                return NEEDS_INPUT, "no client id given"
-            updates["LINEAR_CLIENT_ID"] = client_id
-        if not client_secret:
-            client_secret = self._ask("Client secret", secret=True)
-            if not client_secret:
-                return NEEDS_INPUT, "no client secret given"
-            updates["LINEAR_CLIENT_SECRET"] = client_secret
-        if updates:
-            self._write_env(updates)
-        return DONE, "client id and secret stored in %s" % self.env_path
+        self.say("  Hermes owns the profile .env; setup never writes it. Store them with:")
+        self.say("    hermes config set LINEAR_CLIENT_ID <value>")
+        self.say("    hermes config set LINEAR_CLIENT_SECRET <value>")
+        self.say("  Or re-run the installer for masked prompts:")
+        self.say("    hermes plugins install realpetru/hermes-linear-agent --force")
+        self.say("")
+        return NEEDS_INPUT, ("create the app at %s, store both values with the commands above, "
+                             "then re-run setup" % APP_URL)
 
     def step_state_key(self):
         """A key for signing the OAuth install link. Not Linear's signing secret.
 
-        They are different things and are stored in different variables: this one only
-        proves the callback came back to a link we minted.
+        They are different things and are stored in different places: this one only proves
+        the callback came back to a link we minted, and it lives in the plugin's own 0600
+        settings file — never in the profile's credential store.
         """
-        current = (self.env.get("LINEAR_STATE_KEY") or "").strip()
+        from .settings import ensure_state_key, settings_path, stored_state_key
+
+        current = (self.env.get("LINEAR_STATE_KEY") or "").strip() or stored_state_key()
         if current:
+            self.env["LINEAR_STATE_KEY"] = current
             return SKIPPED, "install-link key already set"
-        self._write_env({"LINEAR_STATE_KEY": os.urandom(32).hex()})
-        mode = _mode_of(self.env_path)
+        try:
+            value = ensure_state_key()
+        except OSError as exc:
+            return FAILED, "could not save the install-link key: %s" % (exc.strerror or exc)
+        self.env["LINEAR_STATE_KEY"] = value
+        path = settings_path()
+        mode = _mode_of(path)
         return DONE, ("generated a key for signing the install link only "
                       "(%s, mode 0%o) — this is not Linear's signing secret"
-                      % (self.env_path, mode or 0))
+                      % (path, mode or 0))
 
     def step_bridge(self):
         port = self.env.get("PORT") or "8650"
@@ -284,10 +283,21 @@ class Setup:
                 # Spawn with THIS plugin's src on the path. `python -m linear_hermes` resolves
                 # the package against the caller's CWD, so from anywhere but the repo root the
                 # child died with ModuleNotFoundError — invisibly, because stderr was DEVNULL.
+                from .config import default_data_dir
+
                 env = self._child_env()
                 env["PYTHONPATH"] = self._plugin_src(env)
-                self.bridge_log = os.path.join(tempfile.gettempdir(), "linear-agent-bridge.log")
-                self._bridge_handle = open(self.bridge_log, "wb")
+                log_dir = default_data_dir()
+                os.makedirs(log_dir, exist_ok=True)
+                self.bridge_log = os.path.join(log_dir, "linear-agent-bridge.log")
+                # 0600: the log can carry operator-facing errors, and the shared system temp
+                # dir was the wrong place for a service log in the first place.
+                fd = os.open(self.bridge_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                try:
+                    os.chmod(self.bridge_log, 0o600)
+                except OSError:
+                    pass
+                self._bridge_handle = os.fdopen(fd, "wb")
                 self.bridge_process = self._runner(
                     [sys.executable, "-m", "linear_hermes"],
                     stdout=self._bridge_handle, stderr=subprocess.STDOUT,
@@ -350,7 +360,9 @@ class Setup:
 
     def _child_env(self):
         env = dict(os.environ)
-        env.update({k: v for k, v in self.env.items() if k.startswith("LINEAR")})
+        # Resolved through Hermes' profile scope (or the standalone sources) in __init__;
+        # the child gets the values it needs without reading any file itself.
+        env.update(self.env)
         return env
 
     def _health(self, url):
@@ -407,7 +419,12 @@ class Setup:
         client_id = (self.env.get("LINEAR_CLIENT_ID") or "").strip()
         if not client_id:
             return NEEDS_INPUT, "no client id yet — finish the app step first"
-        state = make_state((self.env.get("LINEAR_STATE_KEY") or "").strip())
+        from .settings import stored_state_key
+
+        state_key = (self.env.get("LINEAR_STATE_KEY") or "").strip() or stored_state_key()
+        if not state_key:
+            return FAILED, "no install-link key — re-run setup so the state_key step can generate one"
+        state = make_state(state_key)
         url = authorize_url(client_id, self._urls()["redirect_uri"], state=state)
         self.say("")
         self.say("  Install the app in your workspace (as an admin):")
@@ -469,28 +486,25 @@ class Setup:
 
         existing = (self.env.get("LINEAR_WEBHOOK_SECRET") or "").strip()
         if existing:
-            return SKIPPED, "Linear's signing secret is already stored in %s" % self.env_path
+            return SKIPPED, "Linear's signing secret is already set in the Hermes profile"
 
         self.say("")
         self.say("  In the Linear app, on the same page as the callback URL:")
         self.say("    Webhook URL     %s" % target)
         self.say("    Category        Agent session events")
-        self.say("    Signing secret  Linear shows it once — copy it back here")
+        self.say("    Signing secret  Linear shows it once — store it through Hermes")
         self.say("    %s" % APP_URL)
         self.say("")
         self._warn_duplicate_webhook(target)
-
-        if self.yes or not self.interactive:
-            return NEEDS_INPUT, (
-                "paste %s into the app's Webhook URL at %s, pick Agent session events, "
-                "then re-run setup with the signing secret Linear shows" % (target, APP_URL))
-
-        secret = self._ask("Webhook signing secret", secret=True)
-        if not secret:
-            return NEEDS_INPUT, ("no signing secret given — copy it from %s" % APP_URL)
-        self._write_env({"LINEAR_WEBHOOK_SECRET": secret})
-        mode = _mode_of(self.env_path)
-        return DONE, "signing secret stored (%s, mode 0%o)" % (self.env_path, mode or 0)
+        self.say("  Store the signing secret (Hermes owns the profile .env):")
+        self.say("    hermes config set LINEAR_WEBHOOK_SECRET <value>")
+        self.say("  Or re-run the installer for a masked prompt:")
+        self.say("    hermes plugins install realpetru/hermes-linear-agent --force")
+        self.say("")
+        return NEEDS_INPUT, (
+            "paste %s into the app's Webhook URL at %s, pick Agent session events, store "
+            "the signing secret with `hermes config set LINEAR_WEBHOOK_SECRET <value>`, "
+            "then re-run setup" % (target, APP_URL))
 
     def _warn_duplicate_webhook(self, target):
         """If another webhook already posts to this URL, Linear will deliver twice."""
@@ -556,7 +570,8 @@ class Setup:
             if state in (FAILED, NEEDS_INPUT):
                 stopped, reason = name, state
         ok = all(r["state"] in (DONE, SKIPPED) for r in reports)
-        result = {"ok": ok, "env_file": self.env_path, "steps": reports}
+        env_file = self.env_path or os.environ.get("LINEAR_AGENT_ENV_FILE") or ""
+        result = {"ok": ok, "env_file": env_file, "steps": reports}
         self._remember(result)
         return result
 
@@ -584,6 +599,12 @@ class Setup:
     # ---------------------------------------------------------------- helpers
     def _urls(self):
         public = (self.env.get("LINEAR_AGENT_PUBLIC_URL") or "").rstrip("/")
+        if not public:
+            # `run` resolves it in step_public_url first, but a caller may invoke a step
+            # directly; the stored value is the address the operator already confirmed.
+            from .settings import stored_public_url
+
+            public = stored_public_url()
         redirect = (self.env.get("LINEAR_REDIRECT_URI") or "") or (
             (public + "/oauth/callback") if public else "")
         return {

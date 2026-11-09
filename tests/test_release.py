@@ -104,6 +104,14 @@ class ManifestTests(unittest.TestCase):
         kind = re.search(r"^kind:\s*(\S+)", read("plugin.yaml"), re.M).group(1)
         self.assertIn(kind, VALID_KINDS, "unknown kind is treated as standalone with a warning")
 
+    def test_status_token_is_declared_as_a_secret(self):
+        """The review asked for STATUS_TOKEN in the manifest, not only in the code."""
+        block = re.search(r"(?ms)^  - name: STATUS_TOKEN\n(.*?)(?=^  - name:|\Z)",
+                          read("plugin.yaml"))
+        self.assertIsNotNone(block, "STATUS_TOKEN must be declared in optional_env")
+        self.assertIn("secret: true", block.group(1))
+        self.assertIn("password: true", block.group(1))
+
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):

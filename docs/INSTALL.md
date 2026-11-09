@@ -4,8 +4,8 @@ Written for the operator. Every step below is a click in Linear's UI or one comm
 terminal — there is **no public API to create a Linear OAuth application**, so the
 first five minutes must be done by a human with workspace-admin rights.
 
-You will need: workspace **admin** on the target Linear workspace, and the deployment
-`.env` open in an editor.
+You will need: workspace **admin** on the target Linear workspace, and a terminal on the
+machine that runs the bridge.
 
 ---
 
@@ -24,19 +24,20 @@ tunnel, or a small VPS — and note the address:
 https://linear.example.com
 ```
 
-Then either pass it to setup (`--public-url https://linear.example.com`) or set
-`LINEAR_AGENT_PUBLIC_URL` in `.env`. Setup probes `/healthz` on it and reports `done` only
-when it answers, so a wrong or unreachable address fails on evidence rather than silently.
+Then either pass it to setup (`--public-url https://linear.example.com`) or store it with
+`hermes config set LINEAR_AGENT_PUBLIC_URL https://linear.example.com`. Setup probes
+`/healthz` on it and reports `done` only when it answers, so a wrong or unreachable address
+fails on evidence rather than silently.
 
 > A quick-tunnel hostname changes every restart, and that breaks **two** fields in Linear:
 > the app's Callback URL and the Webhook URL. For anything past a test, use a stable
 > hostname with a DNS record you control.
 
 **If the tunnel or proxy is not on the bridge machine:** the bridge must listen on more
-than loopback. Use `hermes linear-agent serve --bind 0.0.0.0` (or set `BIND=0.0.0.0` in
-`.env` — `serve` honours it), and let a firewall be the boundary.
+than loopback. Use `hermes linear-agent serve --bind 0.0.0.0` (or `hermes config set BIND
+0.0.0.0`; `serve` honours it), and let a firewall be the boundary.
 
-**Two URLs, two jobs.****Two URLs, two jobs.** They are often the same host, but they do not have to be:
+**Two URLs, two jobs.** They are often the same host, but they do not have to be:
 
 | URL | Who connects | Localhost allowed? |
 |---|---|---|
@@ -92,29 +93,27 @@ hermes plugins install realpetru/hermes-linear-agent
 hermes plugins enable linear-agent
 ```
 
-The installer prompts for the three values from steps 1–2 and writes them to
-`$(hermes config env-path)`. Paste them there; this is the only credential store the
-`hermes linear-agent …` commands use.
+The installer prompts for the three values from steps 1–2 with masked input and stores
+them in the Hermes profile. The plugin reads them through Hermes' public secret scope
+(`agent.secret_scope.get_secret`), so it never opens `.env`, `auth.json`, or any other
+credential file itself.
 
-If you skipped the prompts, add them now:
+If you skipped the prompts, store them now:
 
 ```bash
-$EDITOR "$(hermes config env-path)"
+hermes config set LINEAR_CLIENT_ID <value>
+hermes config set LINEAR_CLIENT_SECRET <value>
+hermes config set LINEAR_WEBHOOK_SECRET <value>
+hermes config set LINEAR_AGENT_PUBLIC_URL https://YOUR-PUBLIC-HOST
 ```
 
-```dotenv
-LINEAR_CLIENT_ID=…
-LINEAR_CLIENT_SECRET=…
-LINEAR_WEBHOOK_SECRET=…
-LINEAR_AGENT_PUBLIC_URL=https://YOUR-PUBLIC-HOST
-```
+`hermes linear-agent setup` prints these same lines and writes no secret of its own. The
+public URL is the one exception to "secrets only": setup remembers it in the plugin's own
+`plugin-data/linear-agent/settings.json` (mode 0600) so a re-run does not ask again.
 
-Those values go in **one** file, and every command reads it: `$HERMES_HOME/.env` when you
-are inside Hermes (the profile's own `.env`, the one the gateway loads), or `./.env` in a
-standalone checkout. `LINEAR_AGENT_ENV_FILE=/path/to/file` points every command at a different
-file. `setup` writes this file for you at mode 0600; values already exported in your
-environment win over it, including empty ones, so do not leave blank keys for values you set
-elsewhere. Docker Compose and `make dev` read the same file.
+**Standalone (outside Hermes):** the bridge reads the process environment, then only the
+file named by `LINEAR_AGENT_ENV_FILE`. That file is for Docker and systemd; Hermes and the
+plugin never create or edit it. Docker Compose and `make dev` read the same file.
 
 `LINEAR_API_KEY` is a development fallback only: activities posted with it appear under
 your own name, which is the bug this project exists to fix. Leave it empty.
@@ -137,14 +136,16 @@ reach the public host, finish with the redirect instead:
 hermes linear-agent exchange "https://YOUR-PUBLIC-HOST/oauth/callback?code=…"
 ```
 
-`hermes linear-agent exchange` reads the same Hermes credential store, so it works for a
-catalogue install with no repo checkout. Inside a container, the equivalent is
-`python -m linear_hermes.exchange "<redirect URL>"`.
+`hermes linear-agent exchange` reads credentials through the same profile scope, so it
+works for a catalogue install with no repo checkout. Inside a container, the equivalent is
+`python -m linear_hermes.exchange "<redirect URL>"` with the values exported or named by
+`LINEAR_AGENT_ENV_FILE`.
 
 If the callback page says **"Install link expired"**, either the link is older than 15
 minutes, or `LINEAR_STATE_KEY` changed since it was printed — that key is what signs the link
-(`setup` generates one per install, and deleting it invalidates every link already handed
-out). Re-run `authorize` and use the new URL immediately.
+(`setup` generates one per install into `plugin-data/linear-agent/settings.json`, and
+deleting it invalidates every link already handed out). Re-run `authorize` and use the new
+URL immediately.
 
 ## 5. Verify before you assign anything
 
@@ -226,7 +227,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h
-EnvironmentFile=%h/.hermes/.env
+EnvironmentFile=%h/.hermes/linear-agent.env
 Environment=LINEAR_TOKEN_PATH=%h/.hermes/plugin-data/linear-agent/linear-tokens.json
 Environment=STATE_DB=%h/.hermes/plugin-data/linear-agent/state.sqlite3
 ExecStart=%h/.local/bin/hermes linear-agent serve --bind 127.0.0.1 --port 8650
@@ -237,10 +238,17 @@ RestartSec=5
 WantedBy=default.target
 ```
 
+`linear-agent.env` is a file **you** create with only this service's values (the three
+Linear credentials, the public URL, and anything the bridge needs). Do not point
+`EnvironmentFile` at Hermes' own `.env`: that would hand every Hermes secret to the bridge
+process, and the plugin deliberately reads no `.env` on its own.
+
 Replace `%h/.local/bin/hermes` with the output of `command -v hermes`. Then:
 
 ```bash
 mkdir -p ~/.hermes/plugin-data/linear-agent
+# the three LINEAR_* credentials + LINEAR_AGENT_PUBLIC_URL, mode 0600:
+$EDITOR ~/.hermes/linear-agent.env && chmod 600 ~/.hermes/linear-agent.env
 # if you already authorized from a checkout, move the token so it is not lost:
 [ -f data/linear-tokens.json ] && mv data/linear-tokens.json ~/.hermes/plugin-data/linear-agent/
 systemctl --user daemon-reload
@@ -266,7 +274,7 @@ under Hermes' plugin data directory, but being explicit is better).
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string><string>-lc</string>
-    <string>set -a; . "$HOME/.hermes/.env"; exec "$HOME/.local/bin/hermes" linear-agent serve</string>
+    <string>set -a; . "$HOME/.hermes/linear-agent.env"; exec "$HOME/.local/bin/hermes" linear-agent serve</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -279,8 +287,9 @@ under Hermes' plugin data directory, but being explicit is better).
 launchctl load -w ~/Library/LaunchAgents/com.hermes.linear-agent.plist
 ```
 
-Note that launchd does not read `~/.hermes/.env` by itself; the `sh -lc` wrapper is what
-loads it.
+Note that launchd does not read `linear-agent.env` by itself; the `sh -lc` wrapper is what
+exports it. Create that file the same way as in 6b — only the bridge's own values, mode
+0600, not Hermes' `.env`.
 
 ## 7. When nothing happens
 
@@ -288,7 +297,7 @@ Work down this list; each row is a different failure with a different fix.
 
 | What you see | Cause | Do this |
 |---|---|---|
-| `serve` prints `linear-agent is not configured yet` | credentials were skipped at install | `hermes linear-agent doctor`; add them to `$(hermes config env-path)` |
+| `serve` prints `linear-agent is not configured yet` | credentials were skipped at install | `hermes linear-agent doctor`; store them with `hermes config set LINEAR_CLIENT_ID <value>` (and `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET`) |
 | Linear shows nothing; the bridge log has **no** `POST /webhook` line | Linear never reached you: wrong URL, quick-tunnel hostname changed, or the category is not ticked | `curl -fsS "$LINEAR_AGENT_PUBLIC_URL/healthz"` from outside; re-check the webhook URL in the app |
 | Log: `rejected webhook: bad signature` | `LINEAR_WEBHOOK_SECRET` is not the secret of *that* webhook (recreated? rotated?) | copy it again from app → Webhooks; run `doctor` |
 | Log: `event ignored: not_agent_session` | deliveries arrive but not agent-session events: wrong category, or the issue was **assigned** rather than delegated | tick **Agent session events**; use the delegate field |

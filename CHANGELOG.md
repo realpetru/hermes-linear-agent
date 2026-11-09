@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.0 — one secret path, and it is Hermes'
+
+The catalog review's four blockers were all about where secrets live. This release removes
+every direct `.env` read and every secret write from the plugin.
+
+* **Credentials come only from Hermes' secret scope.** `agent.secret_scope.get_secret` is
+  the one source inside Hermes; standalone uses the process environment, then only a file
+  the user names with `LINEAR_AGENT_ENV_FILE`. The implicit `$HERMES_HOME/.env` and `./.env`
+  lookups are gone, and a scoped miss fails closed for credential names instead of borrowing
+  the ambient environment (catalog rule 11).
+* **`setup` no longer writes a `.env`.** It prints the exact `hermes config set KEY <value>`
+  lines (or the `plugins install --force` masked-prompt alternative) and stores no secret.
+  The public URL and the install-link key — neither a Linear credential — live in the
+  plugin's own `settings.json`, mode 0600.
+* **`STATUS_TOKEN` is declared in `plugin.yaml`** and read through the same scope path.
+* **The bridge log is 0600 in the plugin data dir**, not a shared temp directory.
+* **Still interim:** Linear's OAuth flow needs a caller-chosen redirect URI and
+  comma-separated scopes, which the manifest `oauth:` route cannot express yet; the token
+  store stays documented and the upstream seam is described in PR #151444.
+
 ## 1.4.6 — 1.4.5 was red on Python 3.9
 
 * **The dashboard routes annotated `dict | None` and `str | None`.** FastAPI/pydantic evaluate

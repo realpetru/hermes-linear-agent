@@ -78,7 +78,7 @@ def _config_value(ctx, key):
 
 
 def _bridge_url(ctx=None):
-    env = os.environ.get("LINEAR_AGENT_BRIDGE_URL")
+    env = (read_setting("LINEAR_AGENT_BRIDGE_URL", "") or "").strip()
     if env:
         return env.rstrip("/")
     configured = _config_value(ctx, "bridge_url")
@@ -89,13 +89,13 @@ def _bridge_url(ctx=None):
 
 def bridge_status(url=None, timeout=3.0):
     """Probe the bridge. Returns a dict that is always JSON-serialisable."""
-    url = url or os.environ.get("LINEAR_AGENT_BRIDGE_URL") or DEFAULT_BRIDGE
+    url = url or (read_setting("LINEAR_AGENT_BRIDGE_URL", "") or "").strip() or DEFAULT_BRIDGE
     try:
         request = urllib.request.Request(url.rstrip("/") + "/status")
         # Same reason as the doctor probes: a CDN in front of a remote bridge
         # answers 403 to the default Python-urllib agent.
         request.add_header("User-Agent", user_agent())
-        token = (os.environ.get("STATUS_TOKEN") or "").strip()
+        token = (read_setting("STATUS_TOKEN") or "").strip()
         if token:
             request.add_header("Authorization", "Bearer " + token)
         with urllib.request.urlopen(request, timeout=timeout) as r:
@@ -122,7 +122,7 @@ def _agent_block(ctx=None):
         except ProfileError as exc:
             block["agent_profile_valid"] = False
             block["agent_profile_error"] = str(exc)
-    routing = os.environ.get("LINEAR_AGENT_ROUTING", "").strip()
+    routing = (read_setting("LINEAR_AGENT_ROUTING", "") or "").strip()
     if not routing:
         configured = _config_value(ctx, "routing")
         if isinstance(configured, dict) and configured:
@@ -160,14 +160,17 @@ def tool_authorize_url(ctx=None, state="", **_kwargs):
             "error": "LINEAR_CLIENT_ID is not set",
             "next_step": "Create the OAuth app in Linear, then set LINEAR_CLIENT_ID.",
         }, indent=2)
-    # The state is signed with the webhook secret and the callback refuses without it,
-    # so printing a URL when the secret is missing hands out an unredeemable link.
     # The link is signed with the state key — the one `setup` generates for exactly this —
     # and only falls back to the webhook secret when no state key exists. Signing with the
     # webhook secret while the server verified the state key produced links that died with
     # "Install link expired" immediately after a successful setup.
+    from .settings import stored_state_key
+
     state_key = str(
-        read_setting("LINEAR_STATE_KEY", "") or read_setting("LINEAR_WEBHOOK_SECRET", "") or ""
+        read_setting("LINEAR_STATE_KEY", "")
+        or stored_state_key()
+        or read_setting("LINEAR_WEBHOOK_SECRET", "")
+        or ""
     )
     if not state_key:
         return json.dumps({
@@ -226,12 +229,35 @@ def _present(name):
     return bool(str(read_setting(name, "") or "").strip())
 
 
-def _env_view():
-    """The repo .env the docs mention, overlaid by the real environment."""
-    from .config import default_env_file, load_dotenv
+VIEW_KEYS = (
+    "LINEAR_AGENT_PUBLIC_URL",
+    "LINEAR_REDIRECT_URI",
+    "LINEAR_AGENT_BRIDGE_URL",
+    "LINEAR_CLIENT_ID",
+    "LINEAR_CLIENT_SECRET",
+    "LINEAR_STATE_KEY",
+    "LINEAR_WEBHOOK_SECRET",
+    "LINEAR_TOKEN_PATH",
+    "LINEAR_API_KEY",
+    "HERMES_GATEWAY_URL",
+    "HERMES_GATEWAY_TOKEN",
+)
 
-    env = dict(load_dotenv(default_env_file()))
-    env.update(os.environ)
+
+def _env_view():
+    """What this plugin actually resolves — profile scope first, never a ``.env`` read.
+
+    Hermes owns the profile's credential file and exposes it through ``agent.secret_scope``;
+    catalog rule 11 forbids reading that file directly. The two non-secret values setup
+    remembers (public URL, install-link key) come from the plugin's own settings.
+    """
+    from .settings import stored_public_url, stored_state_key
+
+    env = {name: str(read_setting(name, "") or "") for name in VIEW_KEYS}
+    if not env["LINEAR_AGENT_PUBLIC_URL"]:
+        env["LINEAR_AGENT_PUBLIC_URL"] = stored_public_url()
+    if not env["LINEAR_STATE_KEY"]:
+        env["LINEAR_STATE_KEY"] = stored_state_key()
     return env
 
 
@@ -240,11 +266,10 @@ def _urls(ctx=None):
     env = _env_view()
     public = (
         env.get("LINEAR_AGENT_PUBLIC_URL")
-        or read_setting("LINEAR_AGENT_PUBLIC_URL", "")
         or str(_config_value(ctx, "public_url") or "")
         or ""
     ).rstrip("/")
-    redirect = (env.get("LINEAR_REDIRECT_URI") or read_setting("LINEAR_REDIRECT_URI", "") or "") or (
+    redirect = (env.get("LINEAR_REDIRECT_URI") or "") or (
         (public + "/oauth/callback") if public else ""
     )
     return {
@@ -259,7 +284,8 @@ def _token_state():
     from .config import default_data_dir
     from .oauth import load_tokens
 
-    path = os.environ.get("LINEAR_TOKEN_PATH") or os.path.join(default_data_dir(), "linear-tokens.json")
+    path = (read_setting("LINEAR_TOKEN_PATH", "") or "").strip() or os.path.join(
+        default_data_dir(), "linear-tokens.json")
     try:
         record = load_tokens(path)
     except Exception:  # noqa: BLE001 - a corrupt file is a finding, not a crash
@@ -280,8 +306,8 @@ def _token_facts():
 
 
 def _active_profile(ctx=None):
-    """env beats the settings file, which beats the manifest's agent_profile; "" = default."""
-    env = (os.environ.get("LINEAR_AGENT_PROFILE") or "").strip().lower()
+    """scope/env beats the settings file, which beats the manifest's agent_profile; "" = default."""
+    env = (read_setting("LINEAR_AGENT_PROFILE", "") or "").strip().lower()
     if env:
         return env
     try:
@@ -633,7 +659,9 @@ def _handle_cli(args):
             print("")
             print("Create the Linear app (docs/INSTALL.md step 2), then either re-run")
             print("  hermes plugins install realpetru/hermes-linear-agent --force")
-            print("or add the values to $(hermes config env-path).")
+            print("for masked prompts, or store each value with")
+            print("  hermes config set LINEAR_CLIENT_ID <value>   (and LINEAR_CLIENT_SECRET,")
+            print("  LINEAR_WEBHOOK_SECRET).")
             return 2
         return 0
     if command == "status":
@@ -769,7 +797,7 @@ def _agent_list():
         print("%s %s" % ("*" if name == active else " ", name))
     if not active:
         print("\n(no profile set - the gateway default answers)")
-    if os.environ.get("LINEAR_AGENT_PROFILE"):
+    if (read_setting("LINEAR_AGENT_PROFILE", "") or "").strip():
         print("\nnote: LINEAR_AGENT_PROFILE is set in the environment and wins")
     return 0
 

@@ -15,10 +15,14 @@ Order matters — the plugin needs values that only exist after two other steps.
 3. **Store them in Hermes:**
 
    ```bash
-   hermes plugins install realpetru/hermes-linear-agent --force   # re-prompts
-   # or:
-   $EDITOR "$(hermes config env-path)"
+   hermes config set LINEAR_CLIENT_ID <value>
+   hermes config set LINEAR_CLIENT_SECRET <value>
+   hermes config set LINEAR_WEBHOOK_SECRET <value>
+   # or, for masked prompts:
+   hermes plugins install realpetru/hermes-linear-agent --force
    ```
+
+   The plugin reads them through Hermes' profile secret scope; it does not open `.env`.
 
 4. **Run and prove it:**
 

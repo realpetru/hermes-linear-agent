@@ -146,33 +146,30 @@ class WebhookStepTests(SetupBase):
         self.assertEqual(state, NEEDS_INPUT)
         self.assertIn("https://linear.app/settings/api/applications/new", detail)
 
-    def test_a_present_signing_secret_is_stored_at_600_and_never_echoed(self):
+    def test_a_missing_signing_secret_gets_the_hermes_commands_and_writes_nothing(self):
+        """Setup cannot store a secret: Hermes owns the profile, so it prints the commands."""
         self.seed_base()
+        before = self.read_env()
         setup = self.make(transport=FakeTransport(), interactive=True, yes=False)
-        setup._ask = lambda label, secret=False: "linear-signing-secret"
-        state, _detail = setup.step_webhook()
-
-        self.assertEqual(state, DONE)
-        stored = self.read_env()["LINEAR_WEBHOOK_SECRET"]
-        self.assertEqual(stored, "linear-signing-secret")
-        self.assertEqual(stat.S_IMODE(os.stat(self.env_path).st_mode), 0o600)
-        self.assertNotIn("linear-signing-secret", self.output.getvalue())
-        self.assertNotIn("linear-signing-secret", json.dumps(setup.run()))
-
-    def test_an_empty_answer_asks_again_rather_than_storing_nothing(self):
-        self.seed_base()
-        setup = self.make(transport=FakeTransport(), interactive=True, yes=False)
-        setup._ask = lambda label, secret=False: ""
+        asked = []
+        setup._ask = lambda label, secret=False: asked.append(label) or ""
         state, detail = setup.step_webhook()
+
         self.assertEqual(state, NEEDS_INPUT)
-        self.assertIn("no signing secret given", detail)
+        printed = self.output.getvalue()
+        self.assertIn("hermes config set LINEAR_WEBHOOK_SECRET <value>", printed)
+        self.assertIn("hermes plugins install realpetru/hermes-linear-agent --force", printed)
+        self.assertEqual(asked, [], "setup must not prompt for a value it cannot persist")
+        self.assertEqual(self.read_env(), before, "setup must never write the file it was given")
         self.assertNotIn("LINEAR_WEBHOOK_SECRET", self.read_env())
+        self.assertNotIn("LINEAR_WEBHOOK_SECRET", json.dumps(setup.run()))
 
     def test_an_existing_signing_secret_is_skipped(self):
         self.seed_base(LINEAR_WEBHOOK_SECRET="already-there")
         state, detail = self.make(transport=FakeTransport()).step_webhook()
         self.assertEqual(state, SKIPPED)
-        self.assertIn("already stored", detail)
+        self.assertIn("already set in the Hermes profile", detail)
+        self.assertNotIn("already-there", self.output.getvalue())
 
     def test_a_duplicate_webhook_url_is_warned_about(self):
         self.seed_base()
@@ -189,14 +186,19 @@ class WebhookStepTests(SetupBase):
 
 class StateKeyTests(SetupBase):
     def test_the_generated_key_signs_the_install_link_not_webhooks(self):
+        from linear_hermes.settings import settings_path, stored_state_key
+
         setup = self.make()
         state, detail = setup.step_state_key()
         self.assertEqual(state, DONE)
 
-        secret = self.read_env()["LINEAR_STATE_KEY"]
+        secret = stored_state_key()
         self.assertEqual(len(secret), 64, "32 random bytes as hex")
-        mode = stat.S_IMODE(os.stat(self.env_path).st_mode)
-        self.assertEqual(mode, 0o600)
+        self.assertEqual(secret, setup.env["LINEAR_STATE_KEY"])
+        path = settings_path()
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        self.assertEqual(mode, 0o600, "the settings file carries the key; it must be private")
+        self.assertFalse(os.path.exists(self.env_path), "setup must never write a .env")
         self.assertNotIn(secret, self.output.getvalue(), "the secret must never be printed")
         self.assertIn("mode 0600", detail, "the mode is reported in octal, not decimal")
         self.assertIn("not Linear's signing secret", detail)
@@ -222,12 +224,16 @@ class PublicUrlTests(SetupBase):
 
     def test_the_url_is_stored_without_probing_anything(self):
         """Step 1 only records the address; a fresh host has no bridge to answer yet."""
+        from linear_hermes.settings import settings_path, stored_public_url
+
         setup = self.make(public_url="https://mine.example",
                           probe=lambda url, timeout: self.fail("step 1 must not probe"))
         state, detail = setup.step_public_url()
         self.assertEqual(state, DONE)
         self.assertNotIn("/healthz", detail)
-        self.assertEqual(self.read_env()["LINEAR_AGENT_PUBLIC_URL"], "https://mine.example")
+        self.assertEqual(stored_public_url(), "https://mine.example")
+        self.assertEqual(stat.S_IMODE(os.stat(settings_path()).st_mode), 0o600)
+        self.assertFalse(os.path.exists(self.env_path), "setup must never write a .env")
 
     def test_the_public_check_proves_it_once_the_bridge_is_up(self):
         setup = self.make(public_url="https://mine.example",

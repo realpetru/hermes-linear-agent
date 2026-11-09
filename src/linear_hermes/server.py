@@ -15,12 +15,15 @@ from .signature import HEADER, verify_signature
 
 log = logging.getLogger(__name__)
 
-SERVICE_VERSION = "1.4.6"
+SERVICE_VERSION = "1.5.0"
 MAX_BODY = 1 << 20  # 1 MiB: Linear payloads are far smaller
 
 
 def status_token():
-    return (os.environ.get("STATUS_TOKEN") or "").strip()
+    # Through Hermes' profile scope; never a bare os.environ read (catalog rule 11).
+    from .secrets import read_setting
+
+    return (read_setting("STATUS_TOKEN") or "").strip()
 
 
 def status_authorized(headers):
@@ -37,10 +40,11 @@ def status_authorized(headers):
 def status_info():
     """Small, non-sensitive status payload for the plugin's status tool."""
     from . import runtime_status
+    from .secrets import read_setting
 
     info = {"status": "ok", "service": "linear-agent", "version": SERVICE_VERSION}
     info.update(runtime_status.snapshot())
-    profile = os.environ.get("LINEAR_AGENT_PROFILE", "").strip().lower()
+    profile = (read_setting("LINEAR_AGENT_PROFILE", "") or "").strip().lower()
     if not profile:
         # Settings.json is where `hermes linear-agent agent set` writes, and this line used to
         # ignore it and report the gateway default.
@@ -52,8 +56,8 @@ def status_info():
             profile = ""
     info["agent_profile"] = profile or "(gateway default)"
     info["configured"] = {
-        "webhook_secret": bool(os.environ.get("LINEAR_WEBHOOK_SECRET")),
-        "client_id": bool(os.environ.get("LINEAR_CLIENT_ID")),
+        "webhook_secret": bool(read_setting("LINEAR_WEBHOOK_SECRET")),
+        "client_id": bool(read_setting("LINEAR_CLIENT_ID")),
         "app_token": _app_token_ready(),
     }
     return info
@@ -65,7 +69,9 @@ def _app_token_ready():
     It used to report `bool(LINEAR_TOKEN_PATH)` — the variable merely being set counted as
     configured, which is how a box with no token claimed to have one.
     """
-    path = (os.environ.get("LINEAR_TOKEN_PATH") or "").strip()
+    from .secrets import read_setting
+
+    path = (read_setting("LINEAR_TOKEN_PATH", "") or "").strip()
     if not path:
         try:
             from .config import default_data_dir
@@ -85,7 +91,7 @@ def make_handler(cfg, on_event):
     """on_event(payload, headers) runs in a worker thread after a 200 is sent."""
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "hermes-linear-agent/1.4.6"
+        server_version = "hermes-linear-agent/1.5.0"
 
         def _send(self, code, body):
             raw = json.dumps(body).encode("utf-8")

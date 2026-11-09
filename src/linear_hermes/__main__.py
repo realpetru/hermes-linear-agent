@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-import os
 import signal
 
 from .adapters import build_adapter
@@ -25,9 +24,11 @@ def _serve_unconfigured(exc):
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     log = logging.getLogger("linear_hermes")
-    missing = [name for name in ("LINEAR_WEBHOOK_SECRET",) if not (os.environ.get(name) or "").strip()]
-    bind = os.environ.get("BIND") or "127.0.0.1"
-    port = int(os.environ.get("PORT") or 8650)
+    from .secrets import read_setting
+
+    missing = [name for name in ("LINEAR_WEBHOOK_SECRET",) if not (read_setting(name) or "").strip()]
+    bind = read_setting("BIND") or "127.0.0.1"
+    port = int(read_setting("PORT") or 8650)
     log.error("not configured: %s", exc)
     httpd = serve_unconfigured(bind, port, str(exc), missing)
     signal.signal(signal.SIGTERM, lambda *_: httpd.shutdown())

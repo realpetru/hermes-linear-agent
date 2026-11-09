@@ -101,6 +101,11 @@ def save_tokens(path, record):
 
     The old order (write, then chmod) left a window where the access token was world-readable,
     and a crash inside that window left it that way. mkstemp creates the file already private.
+
+    Interim: this file exists because Hermes' manifest ``oauth:`` route cannot express
+    Linear's registered redirect URI or its comma-separated scopes yet, so it cannot own
+    the token. The plugin reads every credential through ``agent.secret_scope``; when the
+    manifest route grows those fields, this store can go away.
     """
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
